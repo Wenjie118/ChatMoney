@@ -8,7 +8,7 @@ load_dotenv()
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 
-from db import save_expense
+from db import save_expense, save_income, get_all_expenses, get_income, get_monthly_summary
 
 # --- API Key Guard ---
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -28,19 +28,36 @@ advisor_llm = ChatGoogleGenerativeAI(
     google_api_key=api_key
 )
 
-# --- Parser Prompt Template ---
 PARSER_TEMPLATE = """
-You are a financial expense parser for a Malaysian personal finance app.
+You are a financial transaction parser for a Malaysian personal finance app.
 
-Extract ALL expenses from the user's message and return ONLY a JSON array.
-Each expense object must have exactly these fields:
+First, determine if the user message describes an EXPENSE or INCOME.
+
+EXPENSE — money spent or paid out
+Examples: bought lunch, paid Grab, spent on groceries, paid electricity bill
+
+INCOME — money received or earned
+Examples: received salary, got paid, freelance payment, received allowance
+
+Extract ALL transactions and return ONLY a JSON array.
+
+For EXPENSE items, each object must have:
+- type: "expense"
 - amount: a number (no currency symbols)
 - category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
 - description: a short description string, or null if unclear
 - date: in YYYY-MM-DD format
 
+For INCOME items, each object must have:
+- type: "income"
+- amount: a number (no currency symbols)
+- source: one of [Salary, Transfer, Interest, Other]
+- description: a short description string, or null if unclear
+- date: in YYYY-MM-DD format
+
 Rules:
-- Always return a JSON array, even if there is only one expense
+- Always return a JSON array, even for a single transaction
+- A single message can contain both expenses and income — extract all of them
 - If no date is mentioned, use today's date: {today}
 - Never return anything outside the JSON array
 - No markdown, no explanation, no code blocks
@@ -48,8 +65,7 @@ Rules:
 User message: {user_input}
 """
 
-# --- Parser Function ---
-def parse_expense(user_input: str) -> list[dict]:
+def parse_transaction(user_input: str) -> list[dict]:
     today = date.today().isoformat()
 
     prompt = PromptTemplate(
@@ -65,49 +81,67 @@ def parse_expense(user_input: str) -> list[dict]:
     })
 
     raw = response.content.strip()
-    expenses = json.loads(raw)
+    transactions = json.loads(raw)
 
-    for expense in expenses:
-        save_expense(
-            amount=expense["amount"],
-            category=expense["category"],
-            date=expense["date"],
-            desc=expense.get("description")
-        )
+    return transactions
 
-    return expenses
-
-# --- Advisor Prompt Template ---
 ADVISOR_TEMPLATE = """
 You are a friendly and practical personal finance advisor for a Malaysian user.
 
-Here is the user's full spending history in JSON format:
+Here is the user's financial data for this month:
+
+MONTHLY SUMMARY:
+{summary}
+
+INCOME HISTORY:
+{income}
+
+EXPENSE HISTORY:
 {expenses}
 
 Based on this data, provide:
-1. A short summary of their spending patterns
-2. Which category they are overspending in
-3. Two or three concrete actionable tips to improve their finances
+1. A monthly overview — how much they earned, spent, and saved this month
+2. Their current savings rate and whether it is healthy
+   (a good savings rate is 20% or above)
+3. Which expense category they should control to improve their savings
+4. A specific and realistic savings rate target they should aim for
+   based on their actual income and spending
+5. Two or three concrete actionable tips to reach that target
 
 Rules:
-- Be specific, reference actual amounts and categories from the data
+- Be specific — always reference actual RM amounts from the data
 - Use Ringgit (RM) for all amounts
 - Keep your response conversational and encouraging, not robotic
-- If there is no data, tell the user to add some expenses first
+- If savings rate is negative, gently flag that they are overspending
+- If there is no data, tell the user to add some transactions first
+- Never make up numbers that are not in the data
+
+# ADD THIS
+- If total_income is zero, do not calculate savings rate. Instead, summarize expenses only and encourage the user to log their income for a complete financial picture
 """
 
-# --- Advisor Function ---
-def get_advice(expenses: list[dict]) -> str:
+def get_advice() -> str:
+    expenses = get_all_expenses()
+    
+    today = date.today()
+    income = get_income(month=today.month, year=today.year)
+    
+    summary = get_monthly_summary()
+
     expenses_json = json.dumps(expenses, indent=2)
+    income_json = json.dumps(income, indent=2)
+    summary_json = json.dumps(summary, indent=2)
 
     prompt = PromptTemplate(
-        input_variables=["expenses"],
+        input_variables=["summary", "income", "expenses"],
         template=ADVISOR_TEMPLATE
     )
 
     chain = prompt | advisor_llm
 
     response = chain.invoke({
+        "summary": summary_json,
+        "income": income_json,
         "expenses": expenses_json
     })
 
