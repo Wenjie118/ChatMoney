@@ -8,7 +8,7 @@ load_dotenv()
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 
-from db import save_expense, save_income, get_all_expenses, get_income, get_monthly_summary
+from db import save_expense, save_income, get_all_expenses, get_income, get_monthly_summary, get_balance
 
 # --- API Key Guard ---
 api_key = os.getenv("GOOGLE_API_KEY")
@@ -90,6 +90,9 @@ You are a friendly and practical personal finance advisor for a Malaysian user.
 
 Here is the user's financial data for this month:
 
+CURRENT BALANCE:
+{balance}
+
 MONTHLY SUMMARY:
 {summary}
 
@@ -101,23 +104,25 @@ EXPENSE HISTORY:
 
 Based on this data, provide:
 1. A monthly overview — how much they earned, spent, and saved this month
-2. Their current savings rate and whether it is healthy
+2. Their current balance and how it compares to the start of the month
+3. Their current savings rate and whether it is healthy
    (a good savings rate is 20% or above)
-3. Which expense category they should control to improve their savings
-4. A specific and realistic savings rate target they should aim for
-   based on their actual income and spending
-5. Two or three concrete actionable tips to reach that target
+4. Which expense category they should control to improve their finances
+5. Two or three concrete actionable tips based on their situation
 
 Rules:
 - Be specific — always reference actual RM amounts from the data
 - Use Ringgit (RM) for all amounts
 - Keep your response conversational and encouraging, not robotic
-- If savings rate is negative, gently flag that they are overspending
-- If there is no data, tell the user to add some transactions first
 - Never make up numbers that are not in the data
 
-# ADD THIS
-- If total_income is zero, do not calculate savings rate. Instead, summarize expenses only and encourage the user to log their income for a complete financial picture
+Situation rules:
+- If income contains Salary entries → focus on savings rate and monthly budget
+- If income exists but no Salary → acknowledge irregular income, focus on expense control
+- If total_income is zero → do not calculate savings rate, summarize expenses only, encourage user to log income, focus on helping them survive on their current balance
+- If savings rate is negative → gently flag overspending without being harsh
+- If balance is low relative to monthly expenses → mention runway without alarming the user
+- current_balance is an estimate based on manual_balance plus transactions since last_updated — present it as an estimate, not a guaranteed figure
 """
 
 def get_advice() -> str:
@@ -127,13 +132,15 @@ def get_advice() -> str:
     income = get_income(month=today.month, year=today.year)
     
     summary = get_monthly_summary()
+    balance = get_balance()
 
     expenses_json = json.dumps(expenses, indent=2)
     income_json = json.dumps(income, indent=2)
     summary_json = json.dumps(summary, indent=2)
+    balance_json = json.dumps(balance, indent=2)
 
     prompt = PromptTemplate(
-        input_variables=["summary", "income", "expenses"],
+        input_variables=["summary", "income", "expenses", "balance"],
         template=ADVISOR_TEMPLATE
     )
 
@@ -142,7 +149,8 @@ def get_advice() -> str:
     response = chain.invoke({
         "summary": summary_json,
         "income": income_json,
-        "expenses": expenses_json
+        "expenses": expenses_json,
+        "balance": balance_json
     })
 
     return response.content.strip()
