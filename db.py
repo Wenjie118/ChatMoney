@@ -1,22 +1,81 @@
 import os
+import socket
+from functools import wraps
+from urllib.parse import urlparse
+
+import httpx
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from supabase import create_client
 import calendar
 from datetime import date, datetime
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+
+SUPABASE_CONNECTION_HELP = (
+    "Cannot connect to Supabase. Update your `.env` file:\n"
+    "1. Open https://supabase.com/dashboard and open your project\n"
+    "2. Go to **Project Settings → API**\n"
+    "3. Set `SUPABASE_URL` to **Project URL** (e.g. `https://abcdefgh.supabase.co`)\n"
+    "4. Set `SUPABASE_KEY` to the **anon public** key\n"
+    "5. Save `.env` and restart the app\n\n"
+    "If the project was deleted or paused, restore or create a new project first."
+)
+
+
+class DatabaseConnectionError(Exception):
+    """Raised when Supabase cannot be reached."""
+
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY in your .env file")
 
-def get_supabase():
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-    return create_client(url, key)
 
+def _validate_supabase_url(url: str) -> str:
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    if parsed.scheme != "https" or not hostname.endswith(".supabase.co"):
+        raise ValueError(
+            f"SUPABASE_URL must look like https://<project-ref>.supabase.co (got: {url!r})"
+        )
+    return hostname
+
+
+def _resolve_host(hostname: str) -> None:
+    try:
+        socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise DatabaseConnectionError(
+            f"Cannot resolve Supabase host `{hostname}`. "
+            "The project URL is wrong, or the project was deleted/paused.\n\n"
+            + SUPABASE_CONNECTION_HELP
+        ) from e
+
+
+def check_supabase_connection() -> tuple[bool, str | None]:
+    try:
+        _resolve_host(_validate_supabase_url(SUPABASE_URL))
+        return True, None
+    except (ValueError, DatabaseConnectionError) as e:
+        return False, str(e)
+
+
+def with_db_connection(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (httpx.ConnectError, httpx.NetworkError, httpx.TimeoutException) as e:
+            raise DatabaseConnectionError(SUPABASE_CONNECTION_HELP) from e
+    return wrapper
+
+
+def get_supabase():
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+@with_db_connection
 def save_expense(amount, category, expense_date, desc=None):
     client = get_supabase()
     expense = {
@@ -28,16 +87,15 @@ def save_expense(amount, category, expense_date, desc=None):
     response = client.table("expenses").insert(expense).execute()
     return response
 
-def get_all_expenses():
+@with_db_connection
+def get_expenses(month, year):
     client = get_supabase()
-    response = client.table("expenses").select("*").execute()
-    return response.data
-
-def get_expenses_by_daterange(start, end):
-    client = get_supabase()
+    start = date(year, month, 1).isoformat()
+    end = date(year, month, calendar.monthrange(year, month)[1]).isoformat()
     response = client.table("expenses").select("*").gte("date", start).lte("date", end).execute()
     return response.data
 
+@with_db_connection
 def save_income(amount, source, income_date, desc=None):
     client = get_supabase()
     income = {
@@ -49,6 +107,7 @@ def save_income(amount, source, income_date, desc=None):
     response = client.table("income").insert(income).execute()
     return response
 
+@with_db_connection
 def get_income(month, year):
     client = get_supabase()
     start = date(year, month, 1).isoformat()
@@ -56,6 +115,7 @@ def get_income(month, year):
     response = client.table("income").select("*").gte("date", start).lte("date", end).execute()
     return response.data
 
+@with_db_connection
 def get_monthly_summary():
     current = date.today()
 
@@ -71,9 +131,7 @@ def get_monthly_summary():
     for income in incomes:
         details["total_income"] += income["amount"]
 
-    start = date(current.year, current.month, 1).isoformat()
-    end = date(current.year, current.month, calendar.monthrange(current.year, current.month)[1]).isoformat()
-    expenses = get_expenses_by_daterange(start, end)
+    expenses = get_expenses(current.month, current.year)
     for expense in expenses:
         details["total_expenses"] += expense["amount"]
 
@@ -85,6 +143,7 @@ def get_monthly_summary():
 
     return details
 
+@with_db_connection
 def set_balance(amount):
     client = get_supabase()
     balance = {
@@ -94,6 +153,7 @@ def set_balance(amount):
     response = client.table("balance").insert(balance).execute()
     return response
 
+@with_db_connection
 def get_balance():
     client = get_supabase()
     response = client.table("balance").select("*").order("created_at", desc=True).limit(1).execute()

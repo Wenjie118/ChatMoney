@@ -2,20 +2,15 @@ import os
 from datetime import date
 import json
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 
-from db import save_expense, save_income, get_all_expenses, get_income, get_monthly_summary, get_balance
+from db import get_expenses, get_income, get_monthly_summary, get_balance
 
-# --- API Key Guard ---
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY is missing from .env")
 
-# --- Model Initialization ---
 parser_llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     temperature=0,
@@ -65,6 +60,19 @@ Rules:
 User message: {user_input}
 """
 
+def _extract_json_array(raw: str) -> list[dict]:
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    transactions = json.loads(text)
+    if not isinstance(transactions, list):
+        raise ValueError("Expected a JSON array of transactions")
+    return transactions
+
 def parse_transaction(user_input: str) -> list[dict]:
     today = date.today().isoformat()
 
@@ -80,10 +88,12 @@ def parse_transaction(user_input: str) -> list[dict]:
         "user_input": user_input
     })
 
-    raw = response.content.strip()
-    transactions = json.loads(raw)
-
-    return transactions
+    try:
+        return _extract_json_array(response.content)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(
+            "Could not parse your message. Try rephrasing, e.g. 'Spent RM50 on groceries'."
+        ) from e
 
 ADVISOR_TEMPLATE = """
 You are a friendly and practical personal finance advisor for a Malaysian user.
@@ -126,9 +136,8 @@ Situation rules:
 """
 
 def get_advice() -> str:
-    expenses = get_all_expenses()
-    
     today = date.today()
+    expenses = get_expenses(month=today.month, year=today.year)
     income = get_income(month=today.month, year=today.year)
     
     summary = get_monthly_summary()
