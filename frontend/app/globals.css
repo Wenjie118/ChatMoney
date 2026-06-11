@@ -1,0 +1,10 @@
+/* Tailwind's three layers. These directives are replaced at build time with the
+   generated utility classes. Keep them at the very top. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* TODO: add any global base styles or CSS variables here.
+   e.g. recreate the old ChatMoney header gradient as a reusable class:
+   .brand-header { @apply bg-gradient-to-br from-[#667eea] to-[#764ba2] text-white; }
+*/

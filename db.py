@@ -184,3 +184,51 @@ def get_balance():
         "manual_balance":  manual_balance,
         "last_updated":    str(last_updated)
     }
+
+
+def save_multiple_transactions(transactions: list) -> dict:
+    saved = 0
+    failed = 0
+    for t in transactions:
+        try:
+            if t["type"] == "income":
+                save_income(
+                    amount=t["amount"],
+                    source=t.get("source") or t.get("category"),
+                    income_date=t["date"],
+                    desc=t.get("description"),
+                )
+            elif t["type"] == "expense":
+                save_expense(
+                    amount=t["amount"],
+                    category=t.get("category") or t.get("source"),
+                    expense_date=t["date"],
+                    desc=t.get("description"),
+                )
+            else:
+                failed += 1
+                continue
+            saved += 1
+        except Exception:
+            failed += 1
+    return {"total": len(transactions), "saved": saved, "failed": failed}
+
+
+@with_db_connection
+def get_logged_periods():
+    """Return (year, month) pairs that have at least one logged transaction,
+    sorted newest first. Used to offer only months that actually have data."""
+    client = get_supabase()
+    periods = set()
+    for table in ("expenses", "income"):
+        rows = client.table(table).select("date").execute().data or []
+        for row in rows:
+            raw = row.get("date")
+            if not raw:
+                continue
+            try:
+                d = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            periods.add((d.year, d.month))
+    return sorted(periods, reverse=True)

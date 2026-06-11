@@ -1,0 +1,21 @@
+# ChatMoney backend dependencies.
+#
+# Install with:  pip install -r requirements.txt
+# (Run this from inside the backend/ folder, ideally in a virtualenv.)
+
+# --- FastAPI stack ---
+fastapi
+uvicorn[standard]        # ASGI server with reload + websockets extras
+python-multipart         # required by FastAPI to receive file uploads (PDF endpoint)
+
+# --- shared with the existing project (see ../requirements.txt) ---
+# These are needed because we import db.py and llm.py, which depend on them.
+python-dotenv
+supabase
+langchain
+langchain-core
+langchain-google-genai
+pandas                   # used by consolidate_transactions logic (ported from app.py)
+
+# NOTE: matplotlib / streamlit from the old requirements.txt are NOT needed here —
+# charting now happens in the React frontend (e.g. Recharts), and Streamlit is gone.
