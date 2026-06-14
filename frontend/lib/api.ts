@@ -15,6 +15,8 @@ import type {
   IAdviceRequest,
   IAdviceResponse,
   ISaveMultipleResult,
+  IMonthlySummary,
+  IPeriod,
 } from "./types";
 
 // Base URL of the FastAPI backend, from frontend/.env.local.
@@ -66,14 +68,22 @@ export async function getBalance(): Promise<IBalance> {
 // ===========================================================================
 
 /**
- * POST /transactions/parse — send free text, backend parses + saves it.
- * TODO:
- *   - fetch(`${API_URL}/transactions/parse`, { method: "POST", headers, body: JSON.stringify({ text }) })
- *   - return await handle<...>(res)
+ * POST /transactions/parse — send free text; backend parses + saves it and returns
+ * the saved transactions. Same shape as getBalance(), but a POST with a JSON body.
+ * @throws Error on network failure or a non-2xx status (e.g. 422 unparseable text).
  */
 export async function parseTransaction(text: string): Promise<ITransaction[]> {
-  // TODO: implement
-  throw new Error("Not implemented");
+  try {
+    const res = await fetch(`${API_URL}/transactions/parse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }), // must match ParseTextRequest { text }
+    });
+    return await handle<ITransaction[]>(res);
+  } catch (err) {
+    console.error("parseTransaction failed:", err);
+    throw err;
+  }
 }
 
 /**
@@ -85,24 +95,125 @@ export async function parseTransaction(text: string): Promise<ITransaction[]> {
  *   - return await handle<ITransaction[]>(res)
  */
 export async function parsePDF(file: File): Promise<ITransaction[]> {
-  // TODO: implement
-  throw new Error("Not implemented");
+  try {
+    // FormData = the browser's multipart/form-data builder (how file uploads
+    // are sent). "file" must match the FastAPI param name: File(...) on `file`.
+    const fd = new FormData();
+    fd.append("file", file);
+
+    const res = await fetch(`${API_URL}/transactions/parse-pdf`, {
+      method: "POST",
+      body: fd,
+      // NOTE: do NOT set a Content-Type header here. The browser sets it to
+      // multipart/form-data AND adds the required boundary string automatically;
+      // setting it by hand would omit the boundary and break the upload.
+    });
+    return await handle<ITransaction[]>(res);
+  } catch (err) {
+    console.error("parsePDF failed:", err);
+    throw err;
+  }
 }
 
 /**
- * POST /transactions/save-multiple — bulk-save reviewed rows.
- * TODO: POST the array as JSON, return ISaveMultipleResult.
+ * POST /transactions/save-multiple — bulk-save the reviewed rows.
+ * Sends the array as the JSON body (the backend validates it as list[TransactionRequest]).
  */
 export async function saveMultiple(rows: ITransaction[]): Promise<ISaveMultipleResult> {
-  // TODO: implement
-  throw new Error("Not implemented");
+  try {
+    const res = await fetch(`${API_URL}/transactions/save-multiple`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(rows), // the whole array IS the body
+    });
+    return await handle<ISaveMultipleResult>(res);
+  } catch (err) {
+    console.error("saveMultiple failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * GET /transactions/summary?month=&year= — the 4 dashboard numbers for one month.
+ */
+export async function getSummary(month: number, year: number): Promise<IMonthlySummary> {
+  try {
+    const res = await fetch(
+      `${API_URL}/transactions/summary?month=${month}&year=${year}`,
+      { method: "GET", cache: "no-store" },
+    );
+    return await handle<IMonthlySummary>(res);
+  } catch (err) {
+    console.error("getSummary failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * GET /transactions/recent?month=&year= — that month's transactions (income +
+ * expenses), newest first. Used for the recent table and to derive the charts.
+ */
+export async function getRecent(month: number, year: number): Promise<ITransaction[]> {
+  try {
+    const res = await fetch(
+      `${API_URL}/transactions/recent?month=${month}&year=${year}`,
+      { method: "GET", cache: "no-store" },
+    );
+    return await handle<ITransaction[]>(res);
+  } catch (err) {
+    console.error("getRecent failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * PUT /balance — set a new manual balance; returns the refreshed snapshot.
+ */
+export async function setBalance(amount: number): Promise<IBalance> {
+  try {
+    const res = await fetch(`${API_URL}/balance`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount }), // matches SetBalanceRequest { amount }
+    });
+    return await handle<IBalance>(res);
+  } catch (err) {
+    console.error("setBalance failed:", err);
+    throw err;
+  }
 }
 
 /**
  * POST /advisor/advice — get AI advice for a month.
- * TODO: POST the IAdviceRequest as JSON, return IAdviceResponse.
+ * Sends {month, year} (either may be omitted = current month), returns the advice.
  */
 export async function getAdvice(req: IAdviceRequest): Promise<IAdviceResponse> {
-  // TODO: implement
-  throw new Error("Not implemented");
+  try {
+    const res = await fetch(`${API_URL}/advisor/advice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req), // must match AdviceRequest { month?, year? }
+    });
+    return await handle<IAdviceResponse>(res);
+  } catch (err) {
+    console.error("getAdvice failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * GET /advisor/periods — the months that actually have logged data, newest-first.
+ * Used to populate the Advisor's month dropdown.
+ */
+export async function getPeriods(): Promise<IPeriod[]> {
+  try {
+    const res = await fetch(`${API_URL}/advisor/periods`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    return await handle<IPeriod[]>(res);
+  } catch (err) {
+    console.error("getPeriods failed:", err);
+    throw err;
+  }
 }

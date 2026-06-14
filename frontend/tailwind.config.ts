@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import typography from "@tailwindcss/typography";
 
 /**
  * Tailwind config. `content` tells Tailwind which files to scan for class names
@@ -12,11 +13,19 @@ const config: Config = {
   ],
   theme: {
     extend: {
-      // TODO: add the ChatMoney brand palette (the old purple gradient #667eea→#764ba2)
-      // e.g. colors: { brand: { from: "#667eea", to: "#764ba2" } }
+      colors: {
+        // The ChatMoney brand purple→indigo gradient stops, reusable as
+        // bg-brand-from / to-brand-to etc.
+        brand: { from: "#7c3aed", to: "#4f46e5" },
+      },
+      boxShadow: {
+        card: "0 1px 2px 0 rgb(0 0 0 / 0.04), 0 1px 3px 0 rgb(0 0 0 / 0.06)",
+      },
     },
   },
-  plugins: [],
+  // The typography plugin gives us the `prose` classes used to render the
+  // advisor's Markdown (headings, bold, lists) with nice spacing.
+  plugins: [typography],
 };
 
 export default config;

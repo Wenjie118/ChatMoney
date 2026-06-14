@@ -19,11 +19,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        {/* TODO: add a shared app header / brand bar here (the old "💰 ChatMoney" banner). */}
-        {/* TODO (later): wrap {children} in any global context providers you add. */}
-        {children}
-      </body>
+      {/* The app shell (sidebar + top bar) lives in app/page.tsx so navigation
+          state can be shared. The layout just sets global chrome + background. */}
+      <body>{children}</body>
     </html>
   );
 }

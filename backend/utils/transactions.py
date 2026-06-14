@@ -13,25 +13,54 @@ WHY THIS FILE EXISTS
     and used the latest date among merged rows.
 """
 
-from typing import Any
-
-
 def consolidate_transactions(transactions: list[dict]) -> list[dict]:
-    """Merge identical transactions and sum their amounts.
+    """Merge identical transactions parsed from a PDF and sum their amounts.
 
     Args:
         transactions: raw dicts from `llm.parse_pdf_transactions`, each shaped like
-            {type, amount, category|source, description, date}.
+            {type, amount, category|source, description, date}. Note the LLM emits
+            `category` for expenses and `source` for income — different keys.
 
     Returns:
-        A list of consolidated dicts. Decide the exact output shape you want the
-        frontend table to consume (e.g. include a "count" field).
+        A list of consolidated dicts. We deliberately output the SAME snake_case
+        shape the rest of the app already speaks (matches `TransactionResponse` and
+        the `ITransaction` TypeScript type), plus a `count` of how many lines merged:
 
-    TODO: port the grouping logic from the old app.py `consolidate_transactions`:
-        1. Build a dict keyed by (type, description, category-or-source).
-        2. On a key collision: add to `amount`, increment a count, keep latest date.
+            {type, amount, category_or_source, description, date, count}
+
+        Keeping one transaction shape everywhere means the frontend preview table,
+        the save endpoint, and this function all agree — no per-endpoint renaming.
+
+    Logic (ported from the old Streamlit app.py):
+        1. Group rows by (type, description, category-or-source).
+        2. On a key collision: add to `amount`, bump `count`, keep the latest date.
         3. On first sight: create the row with count = 1.
-        4. Return list(grouped.values()).
     """
-    # TODO: implement (see steps above)
-    raise NotImplementedError("Port consolidate_transactions from the old app.py")
+    grouped: dict[tuple, dict] = {}
+
+    for t in transactions:
+        # The LLM uses `category` for expenses and `source` for income; collapse
+        # both into one value so similar rows group together regardless of type key.
+        cat_or_src = t.get("category") or t.get("source")
+        key = (t.get("type"), t.get("description"), cat_or_src)
+        d = t.get("date")
+
+        if key in grouped:
+            row = grouped[key]
+            row["amount"] += t.get("amount", 0)
+            row["count"] += 1
+            # Keep the latest date. ISO "YYYY-MM-DD" strings sort lexicographically,
+            # so a plain string compare correctly finds the newer date.
+            if d and (row["date"] is None or str(d) > str(row["date"])):
+                row["date"] = d
+        else:
+            grouped[key] = {
+                "type": t.get("type"),
+                "amount": t.get("amount", 0),
+                "category_or_source": cat_or_src,
+                "description": t.get("description"),
+                "date": d,
+                "count": 1,
+            }
+
+    return list(grouped.values())

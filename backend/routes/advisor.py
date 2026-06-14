@@ -14,28 +14,44 @@ Existing function (VERIFIED):
 
 from fastapi import APIRouter, HTTPException
 
-# from llm import get_advice
-# from db import DatabaseConnectionError
-# from schemas.models import AdviceRequest, AdviceResponse
+from llm import get_advice
+from db import get_logged_periods, DatabaseConnectionError
+from schemas.models import AdviceRequest, AdviceResponse
 
 router = APIRouter()
 
 
-@router.post("/advice")
-def get_financial_advice():  # TODO: (payload: AdviceRequest) -> AdviceResponse
+@router.post("/advice", response_model=AdviceResponse)
+def get_financial_advice(payload: AdviceRequest) -> AdviceResponse:
     """Return AI-generated financial advice for a chosen month.
 
-    TODO:
-        1. Accept an `AdviceRequest` body with optional `month` and `year`
-           (both `int | None`; when omitted, llm.get_advice defaults to today).
-        2. Call `llm.get_advice(month=payload.month, year=payload.year)` -> str.
-        3. Catch llm's ValueError (model busy / API error) -> HTTPException(503).
-           Catch DatabaseConnectionError -> HTTPException(503).
-        4. Return `AdviceResponse(advice=...)`.
+    Thin endpoint: it forwards the (optional) month/year to llm.get_advice, which
+    fetches that month's data and calls Gemini internally. When month/year are None
+    (the user picked nothing), get_advice defaults to today's month.
 
-    OPTIONAL: to show the user *which* months they can pick, add a second endpoint
-        GET /advisor/periods  ->  db.get_logged_periods()  (returns [(year, month), ...])
-        so the frontend dropdown only lists months that actually have data.
+    Errors map to 503 ("service unavailable") because they mean a dependency is
+    down — Gemini busy (ValueError) or Supabase unreachable (DatabaseConnectionError)
+    — not bad input from the user.
     """
-    # TODO: implement
-    raise HTTPException(status_code=501, detail="Not implemented yet")
+    try:
+        advice = get_advice(month=payload.month, year=payload.year)
+    except (ValueError, DatabaseConnectionError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return AdviceResponse(advice=advice)
+
+
+@router.get("/periods")
+def list_periods() -> list[dict]:
+    """List the (year, month) periods that actually have logged transactions.
+
+    Lets the frontend dropdown offer ONLY months that have data. db.get_logged_periods
+    returns (year, month) tuples newest-first; we reshape each into a small
+    {"year", "month"} object so the JSON is self-describing for the frontend.
+    """
+    try:
+        periods = get_logged_periods()
+    except DatabaseConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return [{"year": year, "month": month} for year, month in periods]

@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException
 # db.py lives at the project root; it's importable thanks to the sys.path line
 # in main.py. We import the function we need plus the custom exception it raises.
 from db import get_balance, set_balance, DatabaseConnectionError
-from schemas.models import BalanceResponse
+from schemas.models import BalanceResponse, SetBalanceRequest
 
 router = APIRouter()
 
@@ -54,19 +54,19 @@ def read_balance() -> BalanceResponse:
 # ===========================================================================
 # TODO STUB — implement following the pattern above.
 # ===========================================================================
-@router.put("")
-def update_balance():  # TODO: add typed body param, e.g. (payload: SetBalanceRequest)
-    """Set a new manual balance.
+@router.put("", response_model=BalanceResponse)
+def update_balance(payload: SetBalanceRequest) -> BalanceResponse:
+    """Set a new manual balance, then return the refreshed snapshot.
 
-    TODO:
-        1. Accept a request body with the new amount. Create a `SetBalanceRequest`
-           model in schemas/models.py (a single `amount: float` field) and add it
-           as a typed parameter:  `def update_balance(payload: SetBalanceRequest)`.
-        2. Call `db.set_balance(payload.amount)`.
-        3. Wrap it in try/except DatabaseConnectionError -> raise HTTPException(503).
-        4. Return a confirmation, e.g. the refreshed balance via get_balance(),
-           or {"status": "ok"}. Set `response_model=BalanceResponse` if you return
-           the refreshed snapshot.
+    `db.set_balance` writes a new balance row; `db.get_balance` then re-reads the
+    latest balance (recomputed from that anchor + any later income/expenses). We
+    return the refreshed snapshot — typed as BalanceResponse — so the frontend can
+    update the card from the response without a second request.
     """
-    # TODO: implement
-    raise HTTPException(status_code=501, detail="Not implemented yet")
+    try:
+        set_balance(payload.amount)
+        data = get_balance()
+    except DatabaseConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return BalanceResponse(**data)

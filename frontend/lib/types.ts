@@ -7,16 +7,21 @@
  * Convention here: interfaces are prefixed with `I` (ITransaction, IBalance, ...).
  */
 
-/** A single transaction, parsed from text/PDF or fetched from the DB. */
+/** A single transaction, parsed from text/PDF or fetched from the DB.
+ *  Field names MATCH the backend TransactionResponse exactly (snake_case) so the
+ *  JSON maps straight onto this type with no renaming. */
 export interface ITransaction {
   type: "expense" | "income";
   amount: number;
   /** category (for expenses) OR source (for income) — one combined field for the UI */
-  categoryOrSource: string | null;
+  category_or_source: string | null;
   description: string | null;
   /** ISO date string, "YYYY-MM-DD" */
   date: string;
-  // TODO: add `count?: number` if you display consolidated PDF rows (merged duplicates).
+  /** How many statement lines were merged into this row (PDF import only).
+   *  Optional `?` because text-parse and /recent rows never set it. Mirrors the
+   *  optional `count` on the backend TransactionResponse. */
+  count?: number | null;
 }
 
 /** Mirrors backend BalanceResponse / db.get_balance(). */
@@ -40,6 +45,13 @@ export interface IAdviceResponse {
   // period?: string;
 }
 
+/** One {year, month} pair that has logged data — from GET /advisor/periods.
+ *  Used to populate the Advisor's month dropdown with only months that exist. */
+export interface IPeriod {
+  year: number;
+  month: number;
+}
+
 /** Response from POST /transactions/save-multiple (mirrors db.save_multiple_transactions). */
 export interface ISaveMultipleResult {
   total: number;
@@ -47,6 +59,12 @@ export interface ISaveMultipleResult {
   failed: number;
 }
 
-// TODO: add more interfaces as you build endpoints, e.g.
-//   IParseTextRequest { text: string }
-//   IMonthlySummary { total_income; total_expenses; net_savings; savings_rate }
+/** Response from GET /transactions/summary (mirrors backend SummaryResponse).
+ *  The four headline numbers shown on the dashboard for one month. */
+export interface IMonthlySummary {
+  total_income: number;
+  total_expenses: number;
+  net_savings: number;
+  /** percentage, e.g. 23.5 means 23.5% */
+  savings_rate: number;
+}

@@ -13,7 +13,7 @@ Only `BalanceResponse` is fully written (the GET /balance example depends on it)
 Everything else is a stub: fill in the fields where marked.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ===========================================================================
@@ -32,66 +32,87 @@ class BalanceResponse(BaseModel):
 
 
 # ===========================================================================
-# STUBS — define the fields, then wire each into its route.
+# SLICE 1 — DONE (example). Study these two, then mirror them for later slices.
 # ===========================================================================
-class TransactionRequest(BaseModel):
-    """Input for POST /transactions/parse (free-text) and items in /save-multiple.
+class ParseTextRequest(BaseModel):
+    """Input for POST /transactions/parse — the free-text the user typed.
 
-    TODO: decide the fields. For the free-text parse endpoint you likely only need:
-        text: str
-    For a reviewed/edited row going into /save-multiple you likely need the full
-    transaction:
-        type: str                  # "expense" | "income"
-        amount: float
-        category: str | None       # category (expense) or source (income)
-        description: str | None
-        date: str                  # "YYYY-MM-DD"
-    HINT: you may prefer TWO models (e.g. ParseTextRequest vs TransactionRequest)
-    rather than overloading one. Use `Field(...)` for constraints (e.g. amount > 0).
+    Dedicated to the text-parse endpoint. (We DON'T reuse one big TransactionRequest
+    for everything, because /save-multiple later needs the full transaction shape —
+    a separate model keeps each endpoint's contract clear.)
     """
-    # TODO: add fields
+    text: str
 
 
 class TransactionResponse(BaseModel):
-    """A single transaction returned to the frontend (parsed or fetched).
+    """A single transaction sent back to the frontend (parsed, fetched, or saved).
 
-    TODO: add fields, e.g.
-        type: str
-        amount: float
-        category: str | None
-        description: str | None
-        date: str
-    Consider including a `count: int` field if you return consolidated PDF rows.
+    The parsed dicts from llm.py have EITHER `category` (expense) or `source`
+    (income); we flatten that into one `category_or_source` field so the frontend
+    has a single column to show. Mirror this exactly in frontend/lib/types.ts.
     """
-    # TODO: add fields
+    type: str                          # "expense" | "income"
+    amount: float
+    category_or_source: str | None = None
+    description: str | None = None
+    date: str                          # "YYYY-MM-DD"
+    # How many statement lines were merged into this row (PDF import only).
+    # Optional + default None so the text-parse and /recent endpoints — which
+    # never merge anything — can omit it. It's only populated by /parse-pdf.
+    count: int | None = None
+
+
+# ===========================================================================
+# STUBS — define the fields, then wire each into its route (later slices).
+# ===========================================================================
+class TransactionRequest(BaseModel):
+    """One reviewed transaction sent up in POST /transactions/save-multiple (Slice 5).
+
+    This is the SHAPE THE FRONTEND EDITS in the PDF preview table, so it mirrors
+    `ITransaction` / `TransactionResponse` (same `category_or_source` flattening).
+    The route handler converts each of these into the {type, amount, category|source,
+    date, description} dict that db.save_multiple_transactions expects.
+    """
+    type: str                          # "expense" | "income"
+    amount: float = Field(gt=0)        # reject 0 / negative amounts at the door
+    category_or_source: str | None = None
+    description: str | None = None
+    date: str                          # "YYYY-MM-DD"
+    # The preview rows carry a merge count; we accept it so the JSON validates,
+    # even though save-multiple ignores it (it only writes amount/category/etc.).
+    count: int | None = None
 
 
 class SaveMultipleResponse(BaseModel):
-    """Result of POST /transactions/save-multiple.
+    """Result of POST /transactions/save-multiple — mirrors db.save_multiple_transactions()."""
+    total: int
+    saved: int
+    failed: int
 
-    TODO: mirror db.save_multiple_transactions()'s return dict:
-        total: int
-        saved: int
-        failed: int
+
+class SummaryResponse(BaseModel):
+    """The four headline numbers for the Dashboard, for ONE chosen month (Slice 3).
+
+    db.get_monthly_summary() computes these for the CURRENT month only; our
+    GET /transactions/summary endpoint computes the same figures for any month/year.
+    Mirror this in frontend/lib/types.ts as IMonthlySummary.
     """
-    # TODO: add fields
+    total_income: float
+    total_expenses: float
+    net_savings: float
+    savings_rate: float                # percentage, e.g. 23.5 means 23.5%
+
+
+class SetBalanceRequest(BaseModel):
+    """Input for PUT /balance (Slice 6) — the new manual balance the user typed."""
+    amount: float = Field(ge=0)        # a balance can be 0 but not negative
 
 
 class AdviceRequest(BaseModel):
-    """Input for POST /advisor/advice.
+    month: int | None = None
+    year: int | None = None
 
-    TODO: add optional month/year so the user can pick which month to analyze:
-        month: int | None = None
-        year: int | None = None
-    """
-    # TODO: add fields
-
-
+ 
 class AdviceResponse(BaseModel):
-    """Output of POST /advisor/advice.
+    advice: str
 
-    TODO: add the advice text (markdown string):
-        advice: str
-    Optionally echo back the period analyzed, e.g. `period: str`.
-    """
-    # TODO: add fields
