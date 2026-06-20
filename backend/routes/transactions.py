@@ -45,6 +45,39 @@ from schemas.models import (
 router = APIRouter()
 
 
+def _validate_pdf(pdf_bytes: bytes) -> None:
+    """Reject obviously-unreadable PDFs BEFORE spending an LLM call.
+
+    Gemini returns a cryptic 'The document has no pages' (400 INVALID_ARGUMENT)
+    error for empty, non-PDF, or password-protected files. Bank statements —
+    especially Malaysian bank e-statements — are very often password-protected,
+    which Gemini cannot decrypt. We detect these cases here and raise a clear 422
+    instead of letting the user hit the confusing Gemini error.
+    """
+    if not pdf_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail="The uploaded file is empty (0 bytes). Please choose a valid PDF.",
+        )
+    # Every real PDF starts with the "%PDF" magic header.
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=422,
+            detail="That file doesn't look like a PDF. Please upload a PDF bank statement.",
+        )
+    # Encrypted PDFs carry an /Encrypt entry in their trailer. Gemini can't read
+    # them, so guide the user to upload an unlocked copy.
+    if b"/Encrypt" in pdf_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This PDF is password-protected, so it can't be read. "
+                "Open it, enter the password, then print/save it as a NEW PDF "
+                "(File → Print → Save as PDF) and upload that unlocked copy."
+            ),
+        )
+
+
 # ===========================================================================
 # SLICE 1 — DONE (example). Mirror this shape for the stubs below.
 # ===========================================================================
@@ -121,6 +154,11 @@ async def parse_pdf(file: UploadFile = File(...)) -> list[TransactionResponse]:
     """
     # Step 1 — pull the raw bytes off the multipart upload.
     pdf_bytes = await file.read()
+    print(f"[parse-pdf] received '{file.filename}' — {len(pdf_bytes)} bytes")
+
+    # Step 1b — reject empty / non-PDF / password-protected files up front, so the
+    # user gets a clear message instead of Gemini's cryptic 'no pages' error.
+    _validate_pdf(pdf_bytes)
 
     # Step 2 + 3 — parse with the LLM, then merge duplicates.
     try:
