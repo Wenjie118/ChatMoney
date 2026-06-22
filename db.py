@@ -96,6 +96,41 @@ def get_expenses(month, year):
     return response.data
 
 @with_db_connection
+def get_expenses_until_today(month, year):
+    """Like get_expenses, but bounds the END date to today, so the CURRENT
+    month is cut off at today while PAST months still return the full month.
+
+    Same return shape as get_expenses: list[dict] with keys
+    id, amount, category, description, date, created_at.
+    """
+    client = get_supabase()
+    today = date.today()
+
+    # start: first day of the month — identical to get_expenses.
+    # TODO: start = date(year, month, 1)
+
+    # last day of the month.
+    # calendar.monthrange(year, month) returns a (weekday_of_1st, num_days)
+    # TUPLE. [1] grabs the 2nd element (the day count). In Python you index a
+    # tuple like an array; there is no getter method.
+    # TODO: month_end = date(year, month, calendar.monthrange(year, month)[1])
+
+    # end: the EARLIER of today and the month's last day.
+    # min() works directly on date objects because dates are orderable in
+    # Python (the < operator is defined for them — no Comparable boilerplate).
+    #   - current month  -> today is before month_end  -> min picks today
+    #   - past month     -> today is after  month_end  -> min picks month_end (full month)
+    # TODO: end = min(today, month_end)
+
+    # TODO: mirror get_expenses' query exactly, but with the start/end above:
+    #   response = (client.table("expenses").select("*")
+    #               .gte("date", start.isoformat())
+    #               .lte("date", end.isoformat())
+    #               .execute())
+    #   return response.data
+
+
+@with_db_connection
 def save_income(amount, source, income_date, desc=None):
     client = get_supabase()
     income = {

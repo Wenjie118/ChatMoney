@@ -1,6 +1,7 @@
 import os
 import base64
 import time
+import calendar
 from datetime import date
 import json
 
@@ -9,7 +10,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from google.genai.errors import APIError
 
-from db import get_expenses, get_income, get_balance
+from db import get_expenses, get_expenses_until_today, get_income, get_balance
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -328,3 +329,123 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
         raise ValueError(_friendly_api_error(e)) from e
 
     return _content_to_text(response.content).strip()
+
+SPENDING_ANALYSIS_TEMPLATE = """
+You are a friendly, practical personal finance coach for a Malaysian user.
+
+This is a PROVISIONAL, mid-month check-in. The figures below cover spending
+SO FAR in {period} only — the month is NOT over yet. Always frame it that way
+("so far this month", "at this pace") and never say "this month you spent" as
+if it were final.
+
+This is EXPENSE-ONLY. Do NOT mention income, savings, or savings rate, and do
+NOT comment on how much they saved — you do not have that data.
+
+SPENDING SO FAR THIS MONTH ({period}):
+{summary}
+
+How to read the data:
+- days_elapsed / days_in_month tells you how far into the month we are.
+- For each category, spent_so_far is the real amount spent up to today.
+- projected_month_end is a SIMPLE linear estimate ALREADY CALCULATED FOR YOU
+  (spent_so_far scaled from days_elapsed up to days_in_month). It is provided
+  so you don't have to do any maths. Reference these exact RM numbers — do NOT
+  recompute, re-scale, or invent your own projections.
+
+Use your judgement on the projections — they are ROUGH:
+- A linear projection assumes steady, recurring spending. That is reasonable for
+  things like Food, Transport, or Entertainment.
+- It is MISLEADING for one-off costs. If a category looks like a single large
+  lump (e.g. annual insurance, a flight, a yearly subscription, a big one-time
+  purchase), say so plainly, treat its projection as NOT realistic, and do NOT
+  tell the user to "cut" it — it likely won't repeat this month.
+
+Based on the data, give:
+1. Which categories are running high so far this month (reference RM amounts).
+2. A rough month-end projection for the RECURRING categories using the given
+   projected_month_end figures, and what that pace implies if it continues.
+3. Two or three concrete, specific tips to reduce spending for the REST of this
+   month.
+
+Rules:
+- Use Ringgit (RM) for every amount.
+- Only use the numbers given above — never make up figures.
+- Keep it conversational and encouraging, not robotic or preachy.
+"""
+
+
+def get_spending_analysis(month: int | None = None, year: int | None = None) -> str:
+    # `int | None` = "an int OR None" (PEP 604 union type). Like Java's
+    # @Nullable Integer; the `| None` plus the `= None` default lets callers
+    # omit the argument. Same shape as get_advice's signature.
+
+    # 1. Default month/year to today (copy get_advice's `month or today.month`
+    #    pattern — in Python `a or b` returns b when a is None/0).
+    # TODO
+
+    # 2. Pull PROVISIONAL expenses (bounded to today for the current month).
+    # TODO: expenses = get_expenses_until_today(month=month, year=year)
+
+    # 3. Compute everything IN CODE. The LLM does NO arithmetic.
+
+    #    days_in_month -> calendar.monthrange(year, month)[1]
+    #    (monthrange returns a (weekday_of_1st, num_days) tuple; [1] = day count)
+    # TODO
+
+    #    days_elapsed:
+    #      - if this is the current real month -> today's day number (date.today().day)
+    #      - otherwise (a past/closed month)   -> days_in_month (treat as full month)
+    #    Compare against date.today() to decide which case you're in.
+    # TODO
+
+    #    per-category totals -> a dict: category(str) -> summed amount(float).
+    #    Readable approach: start with an empty dict and accumulate in a loop:
+    #        totals[cat] = totals.get(cat, 0.0) + e["amount"]
+    #    dict.get(key, default) returns the default instead of raising KeyError
+    #    (Java's Map.get would return null here). collections.defaultdict(float)
+    #    is the idiomatic alternative if you'd rather not call .get each time.
+    # TODO
+
+    #    total_so_far -> sum the amounts. `sum(e["amount"] for e in expenses)`
+    #    uses a generator expression (lazy one-liner, like a Java stream
+    #    .mapToDouble(...).sum()). get_advice uses this exact idiom.
+    # TODO
+
+    #    per-category projection = total / days_elapsed * days_in_month.
+    #    A DICT COMPREHENSION is the clean way to transform one dict into another:
+    #        { cat: round(total / days_elapsed * days_in_month, 2)
+    #          for cat, total in category_totals.items() }
+    #    Read it as "build {key: value} for each pair". .items() yields
+    #    (key, value) tuples and the `for cat, total` unpacks each tuple.
+    # TODO
+
+    #    Round all money to 2 dp with round(x, 2) — both spent_so_far and the
+    #    projections.
+
+    # 4. Build the summary dict, then JSON-dump it for the prompt
+    #    (json.dumps(summary, indent=2), exactly like get_advice). Suggested shape:
+    #        {
+    #          "days_elapsed":  ...,
+    #          "days_in_month": ...,
+    #          "total_so_far":  ...,
+    #          "categories": {
+    #              "<category>": {"spent_so_far": ..., "projected_month_end": ...},
+    #              ...
+    #          },
+    #        }
+    #    A nested dict comprehension over your category totals builds "categories".
+    # TODO
+
+    #    period string for the prompt: date(year, month, 1).strftime("%B %Y")
+    #    -> e.g. "June 2026" (same as get_advice).
+    # TODO
+
+    # 5. Wire up the LLM call (mirror get_advice's structure exactly):
+    #    - prompt = PromptTemplate(input_variables=["period", "summary"],
+    #                              template=SPENDING_ANALYSIS_TEMPLATE)
+    #    - chain = prompt | advisor_llm
+    #    - response = _invoke_with_retry(lambda: chain.invoke({...}))
+    #    - wrap APIError -> ValueError(_friendly_api_error(e)) from e
+    #    - return _content_to_text(response.content).strip()
+    # TODO
+    ...
