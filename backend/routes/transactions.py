@@ -20,7 +20,7 @@ Relevant existing functions (VERIFIED against your current code):
     utils.transactions.consolidate_transactions(transactions) -> list[dict]   # port from app.py
 """
 
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
@@ -81,6 +81,50 @@ def _validate_pdf(pdf_bytes: bytes) -> None:
 # ===========================================================================
 # SLICE 1 — DONE (example). Mirror this shape for the stubs below.
 # ===========================================================================
+def _clean_parsed_row(t: dict) -> dict | None:
+    """Normalize ONE LLM-parsed transaction into a safe, saveable row, or return
+    None to skip it.
+
+    The model can omit or malform fields (a missing `category`, a non-numeric
+    `amount`, no `date`). Reading keys with `[]` 500s on the first missing one, so
+    we read everything defensively: drop rows we cannot save (unknown type or a
+    non-positive/non-numeric amount) and fill sensible defaults for the rest
+    (category/source -> "Other", missing or garbled date -> today). This mirrors the
+    tolerant `.get()` handling the PDF path already uses via consolidate_transactions.
+    """
+    if not isinstance(t, dict):
+        return None
+
+    ttype = t.get("type")
+    if ttype not in ("income", "expense"):
+        return None
+
+    # Amount must be a positive number; a missing/garbage amount is unsaveable.
+    try:
+        amount = float(t.get("amount"))
+    except (TypeError, ValueError):
+        return None
+    if amount <= 0:
+        return None
+
+    # The parser is told to default a missing date to today; backstop it here so a
+    # blank/malformed date never blocks an otherwise-valid row.
+    try:
+        cleaned_date = datetime.strptime(str(t.get("date"))[:10], "%Y-%m-%d").date().isoformat()
+    except (TypeError, ValueError):
+        cleaned_date = date.today().isoformat()
+
+    cat_or_src = (t.get("source") if ttype == "income" else t.get("category")) or "Other"
+
+    return {
+        "type": ttype,
+        "amount": amount,
+        "category_or_source": cat_or_src,
+        "description": t.get("description"),
+        "date": cleaned_date,
+    }
+
+
 @router.post("/parse", response_model=list[TransactionResponse])
 def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
     """Parse a natural-language message (e.g. "spent RM50 on coffee") and save it.
@@ -102,35 +146,38 @@ def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    # Step 3 + 4 — save each row and build the response.
+    # Step 3 + 4 — clean/validate each parsed row, then save it and build the
+    # response. Unsaveable rows (unknown type, missing/non-positive amount) are
+    # skipped rather than crashing the whole request, so the valid rows in the same
+    # message still get saved.
     saved: list[TransactionResponse] = []
     try:
         for t in parsed:
-            if t["type"] == "income":
+            row = _clean_parsed_row(t)
+            if row is None:
+                continue
+
+            if row["type"] == "income":
                 save_income(
-                    amount=t["amount"],
-                    source=t["source"],
-                    income_date=t["date"],
-                    desc=t.get("description"),
+                    amount=row["amount"],
+                    source=row["category_or_source"],
+                    income_date=row["date"],
+                    desc=row["description"],
                 )
-                cat_or_src = t["source"]
-            elif t["type"] == "expense":
+            else:  # expense
                 save_expense(
-                    amount=t["amount"],
-                    category=t["category"],
-                    expense_date=t["date"],
-                    desc=t.get("description"),
+                    amount=row["amount"],
+                    category=row["category_or_source"],
+                    expense_date=row["date"],
+                    desc=row["description"],
                 )
-                cat_or_src = t["category"]
-            else:
-                continue  # skip unknown types
 
             saved.append(TransactionResponse(
-                type=t["type"],
-                amount=t["amount"],
-                category_or_source=cat_or_src,
-                description=t.get("description"),
-                date=t["date"],
+                type=row["type"],
+                amount=row["amount"],
+                category_or_source=row["category_or_source"],
+                description=row["description"],
+                date=row["date"],
             ))
     except DatabaseConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
