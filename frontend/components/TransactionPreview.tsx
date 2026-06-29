@@ -20,9 +20,16 @@ import { optionsForType } from "@/lib/constants";
 interface Props {
   /** Consolidated rows returned by api.parsePDF(). */
   initialRows: ITransaction[];
+  /** Active plan's TAGGED bucket labels. When non-empty, an editable Allocation
+   *  column is shown so each expense can be tagged to a bucket. Empty/omitted =
+   *  no active plan, so the column is hidden and allocations stay null. */
+  allocationOptions?: string[];
   /** Optional callback after a successful save (e.g. to clear the preview). */
   onSaved?: (result: { total: number; saved: number; failed: number }) => void;
 }
+
+/** Fallback bucket when an expense has no allocation but a plan is active. */
+const DEFAULT_ALLOCATION = "Daily Spending";
 
 /** A fresh, empty row for the "Add row" button. */
 function blankRow(): ITransaction {
@@ -32,10 +39,13 @@ function blankRow(): ITransaction {
     category_or_source: "",
     description: "",
     date: new Date().toISOString().slice(0, 10), // today as "YYYY-MM-DD"
+    allocation: null,
   };
 }
 
-export default function TransactionPreview({ initialRows, onSaved }: Props) {
+export default function TransactionPreview({ initialRows, allocationOptions, onSaved }: Props) {
+  // Only offer allocation tagging when there's an active plan with tagged buckets.
+  const showAllocation = (allocationOptions?.length ?? 0) > 0;
   // Local editable copy of the rows. All edits stay here until "Confirm & Save".
   const [rows, setRows] = useState<ITransaction[]>(initialRows);
   const [saving, setSaving] = useState(false);
@@ -64,7 +74,17 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
     setSaving(true);
     setMessage(null);
     try {
-      const result = await saveMultiple(rows);
+      // Normalize allocation: only expenses carry one, and only when a plan is
+      // active. An untouched expense (null) falls back to "Daily Spending" so it
+      // matches what the dropdown displays. Income is always null.
+      const payload = rows.map((r) => ({
+        ...r,
+        allocation:
+          showAllocation && r.type === "expense"
+            ? r.allocation || DEFAULT_ALLOCATION
+            : null,
+      }));
+      const result = await saveMultiple(payload);
       setMessage(`✅ Saved ${result.saved} of ${result.total} transactions.`);
       onSaved?.(result);
     } catch (err) {
@@ -90,6 +110,7 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
               <th className="p-2">Type</th>
               <th className="p-2">Description</th>
               <th className="p-2">Category/Source</th>
+              {showAllocation && <th className="p-2">Allocation</th>}
               <th className="p-2">Amount</th>
               <th className="p-2">Count</th>
               <th className="p-2"></th>
@@ -145,6 +166,31 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                     ))}
                   </select>
                 </td>
+                {showAllocation && (
+                  <td className="p-1">
+                    {row.type === "expense" ? (
+                      <select
+                        className="w-36 rounded border px-2 py-1"
+                        value={row.allocation ?? DEFAULT_ALLOCATION}
+                        onChange={(e) => updateRow(i, "allocation", e.target.value)}
+                      >
+                        {/* Keep an unknown LLM guess as an option so it isn't lost. */}
+                        {row.allocation &&
+                          !allocationOptions!.includes(row.allocation) && (
+                            <option value={row.allocation}>{row.allocation}</option>
+                          )}
+                        {allocationOptions!.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      // Income rows are never tagged.
+                      <span className="text-gray-300">—</span>
+                    )}
+                  </td>
+                )}
                 <td className="p-1">
                   <input
                     type="number"

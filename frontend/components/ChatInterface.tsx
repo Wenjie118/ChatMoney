@@ -9,9 +9,9 @@
  */
 "use client";
 
-import { useState } from "react";
-import { parseTransaction, parsePDF } from "@/lib/api";
-import type { ITransaction } from "@/lib/types";
+import { useEffect, useState } from "react";
+import { parseTransaction, parsePDF, getPlan } from "@/lib/api";
+import type { ITransaction, IPlan } from "@/lib/types";
 import TransactionPreview from "./TransactionPreview";
 import { useBusy } from "@/lib/busy";
 
@@ -35,8 +35,23 @@ export default function ChatInterface() {
 
   // PDF import (Slice 4): the parsed rows awaiting review.
   const [pdfRows, setPdfRows] = useState<ITransaction[] | null>(null);
+  // Active salary plan (if any) — drives the review table's Allocation column.
+  const [plan, setPlan] = useState<IPlan | null>(null);
   // Global busy overlay — freezes the WHOLE app while the PDF is being parsed.
   const { setBusy } = useBusy();
+
+  // Load the active plan once so we know whether to offer allocation tagging and
+  // which bucket labels are valid. Silent on failure — the column just hides.
+  useEffect(() => {
+    getPlan()
+      .then(setPlan)
+      .catch(() => setPlan(null));
+  }, []);
+
+  // The tagged bucket labels the LLM/user can assign (Savings is never a tag).
+  const allocationOptions = plan
+    ? plan.allocations.filter((a) => a.tracking_mode === "tagged").map((a) => a.label)
+    : [];
 
   /** Runs when the user picks a PDF file. Parses it, then shows the preview table. */
   async function handlePdf(e: React.ChangeEvent<HTMLInputElement>) {
@@ -160,6 +175,7 @@ export default function ChatInterface() {
           <TransactionPreview
             key={pdfRows.length + "-" + (pdfRows[0]?.date ?? "")}
             initialRows={pdfRows}
+            allocationOptions={allocationOptions}
             onSaved={() => setPdfRows(null)}
           />
         )}

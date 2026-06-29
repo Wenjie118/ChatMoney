@@ -42,7 +42,10 @@ def consolidate_transactions(transactions: list[dict]) -> list[dict]:
         # The LLM uses `category` for expenses and `source` for income; collapse
         # both into one value so similar rows group together regardless of type key.
         cat_or_src = t.get("category") or t.get("source")
-        key = (t.get("type"), t.get("description"), cat_or_src)
+        # The salary-plan bucket (expense rows only). Part of the key so rows tagged
+        # to different buckets never merge into one — otherwise a tag would be lost.
+        allocation = t.get("allocation")
+        key = (t.get("type"), t.get("description"), cat_or_src, allocation)
         d = t.get("date")
 
         if key in grouped:
@@ -61,6 +64,9 @@ def consolidate_transactions(transactions: list[dict]) -> list[dict]:
                 "description": t.get("description"),
                 "date": d,
                 "count": 1,
+                # Carried through so the review table can prefill the Allocation
+                # column with the LLM's guess; None for income / no active plan.
+                "allocation": allocation,
             }
 
     return list(grouped.values())

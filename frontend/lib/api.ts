@@ -17,6 +17,9 @@ import type {
   ISaveMultipleResult,
   IMonthlySummary,
   IPeriod,
+  IPlan,
+  IPlanSaveRequest,
+  IAllocationActual,
 } from "./types";
 
 // Base URL of the FastAPI backend, from frontend/.env.local.
@@ -214,6 +217,62 @@ export async function getPeriods(): Promise<IPeriod[]> {
     return await handle<IPeriod[]>(res);
   } catch (err) {
     console.error("getPeriods failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * GET /plans — the active salary plan, or null when none exists yet.
+ * The backend returns JSON null in the no-plan case, so the result is nullable.
+ */
+export async function getPlan(): Promise<IPlan | null> {
+  try {
+    const res = await fetch(`${API_URL}/plans`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    return await handle<IPlan | null>(res);
+  } catch (err) {
+    console.error("getPlan failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * PUT /plans — save the whole plan draft; returns the refreshed plan.
+ * The backend validates (salary > 0, allocations ≤ salary) and computes Savings,
+ * so a 422 here surfaces the "allocations exceed salary" message.
+ */
+export async function savePlan(req: IPlanSaveRequest): Promise<IPlan> {
+  try {
+    const res = await fetch(`${API_URL}/plans`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req), // matches PlanSaveRequest { salary, buckets }
+    });
+    return await handle<IPlan>(res);
+  } catch (err) {
+    console.error("savePlan failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * GET /plans/actuals?month=&year= — the deterministic planned-vs-actual table.
+ * Empty array when there's no active plan. Same data the advisor receives.
+ */
+export async function getActuals(
+  month: number,
+  year: number,
+): Promise<IAllocationActual[]> {
+  try {
+    const res = await fetch(
+      `${API_URL}/plans/actuals?month=${month}&year=${year}`,
+      { method: "GET", cache: "no-store" },
+    );
+    return await handle<IAllocationActual[]>(res);
+  } catch (err) {
+    console.error("getActuals failed:", err);
     throw err;
   }
 }

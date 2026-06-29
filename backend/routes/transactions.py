@@ -31,6 +31,7 @@ from db import (
     save_multiple_transactions,
     get_expenses,
     get_income,
+    get_active_plan,
     DatabaseConnectionError,
 )
 from utils.transactions import consolidate_transactions
@@ -160,9 +161,16 @@ async def parse_pdf(file: UploadFile = File(...)) -> list[TransactionResponse]:
     # user gets a clear message instead of Gemini's cryptic 'no pages' error.
     _validate_pdf(pdf_bytes)
 
-    # Step 2 + 3 — parse with the LLM, then merge duplicates.
+    # Step 1c — fetch the active plan (if any) so the parser can tag each expense
+    # with an allocation bucket. None when there's no plan -> parser leaves it null.
     try:
-        parsed = parse_pdf_transactions(pdf_bytes)
+        plan = get_active_plan()
+    except DatabaseConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # Step 2 + 3 — parse with the LLM (passing the plan as tag context), then merge.
+    try:
+        parsed = parse_pdf_transactions(pdf_bytes, plan=plan)
     except ValueError as exc:
         # Unreadable PDF, nothing parseable, or the AI model was busy/errored.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -208,6 +216,7 @@ def recent_transactions(
             category_or_source=e.get("category"),
             description=e.get("description"),
             date=e["date"],
+            allocation=e.get("allocation"),
         ))
     for i in income:
         rows.append(TransactionResponse(
@@ -272,6 +281,8 @@ def save_multiple(payload: list[TransactionRequest]) -> SaveMultipleResponse:
             "source": t.category_or_source,
             "date": t.date,
             "description": t.description,
+            # Persisted into expenses.allocation for expense rows (ignored for income).
+            "allocation": t.allocation,
         }
         for t in payload
     ]

@@ -60,6 +60,10 @@ class TransactionResponse(BaseModel):
     # Optional + default None so the text-parse and /recent endpoints — which
     # never merge anything — can omit it. It's only populated by /parse-pdf.
     count: int | None = None
+    # Salary-plan bucket label for expenses (e.g. "Daily Spending", "Mom"). The
+    # LLM guesses it during PDF parsing; the review table lets the user adjust it.
+    # Null for income, or when there's no active plan. Mirrors expenses.allocation.
+    allocation: str | None = None
 
 
 # ===========================================================================
@@ -81,6 +85,9 @@ class TransactionRequest(BaseModel):
     # The preview rows carry a merge count; we accept it so the JSON validates,
     # even though save-multiple ignores it (it only writes amount/category/etc.).
     count: int | None = None
+    # Chosen salary-plan bucket for expenses; persisted into expenses.allocation
+    # by save_multiple_transactions. Null for income / no active plan.
+    allocation: str | None = None
 
 
 class SaveMultipleResponse(BaseModel):
@@ -115,4 +122,63 @@ class AdviceRequest(BaseModel):
  
 class AdviceResponse(BaseModel):
     advice: str
+
+
+# ===========================================================================
+# Salary allocation plan — mirrors db.get_active_plan() / plan_allocations rows.
+# Mirror these in frontend/lib/types.ts (IPlan / IAllocation / ...).
+# ===========================================================================
+class AllocationModel(BaseModel):
+    """One bucket in the active plan.
+
+    `percent` is the STORED share of salary for %-based buckets (e.g. EPF 11%);
+    None means the bucket is RM-based (target_rm is the fixed source of truth).
+    The UI derives the display % itself from the current salary draft.
+    """
+    id: int
+    label: str
+    target_rm: float
+    tracking_mode: str                 # "tagged" | "leftover"
+    is_default: bool
+    is_active: bool
+    percent: float | None = None
+
+
+class PlanResponse(BaseModel):
+    """The active plan. GET /plans returns this OR null when no plan exists."""
+    id: int
+    salary: float
+    allocations: list[AllocationModel]
+
+
+class PlanBucket(BaseModel):
+    """One NON-Savings bucket in a save draft. Savings is computed, never sent.
+
+    `percent` non-null = the bucket is %-based; the server computes its RM as
+    salary * percent / 100. Null = RM-based: target_rm is used as-is.
+    """
+    id: int | None = None              # existing allocation id, or None if new
+    label: str
+    target_rm: float = Field(ge=0)
+    percent: float | None = Field(default=None, ge=0)
+
+
+class PlanSaveRequest(BaseModel):
+    """Body for PUT /plans — the whole editable draft.
+
+    `buckets` holds every active NON-Savings bucket (Daily Spending + customs).
+    The server computes Savings = salary - sum(bucket targets) and rejects the
+    save when that sum exceeds salary.
+    """
+    salary: float = Field(gt=0)
+    buckets: list[PlanBucket]
+
+
+class AllocationActual(BaseModel):
+    """One row of the deterministic planned-vs-actual table (GET /plans/actuals)."""
+    label: str
+    target_rm: float
+    actual_rm: float
+    variance_rm: float
+    tracking_mode: str
 

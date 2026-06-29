@@ -46,7 +46,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from fastapi import FastAPI
 
 from utils.cors import configure_cors
-from routes import balance, transactions, advisor
+from routes import balance, transactions, advisor, plans
 
 # ---------------------------------------------------------------------------
 # App instance
@@ -74,6 +74,7 @@ configure_cors(app)
 app.include_router(balance.router, prefix="/balance", tags=["balance"])
 app.include_router(transactions.router, prefix="/transactions", tags=["transactions"])
 app.include_router(advisor.router, prefix="/advisor", tags=["advisor"])
+app.include_router(plans.router, prefix="/plans", tags=["plans"])
 
 
 @app.get("/health")

@@ -9,7 +9,13 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from google.genai.errors import APIError
 
-from db import get_expenses, get_income, get_balance
+from db import (
+    get_expenses,
+    get_income,
+    get_balance,
+    get_active_plan,
+    get_allocation_actuals,
+)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -169,6 +175,28 @@ def parse_transaction(user_input: str) -> list[dict]:
             "Could not parse your message. Try rephrasing, e.g. 'Spent RM50 on groceries'."
         ) from e
 
+def _format_plan_for_prompt(plan: dict | None) -> str:
+    """Compact description of the active plan's TAGGED buckets for the parser prompt.
+
+    Savings (tracking_mode='leftover') is excluded — it is the balancing bucket and
+    is NEVER a per-transaction tag. Returns "" when there is no active plan or it
+    has no tagged buckets, which signals the parser to leave `allocation` null.
+    """
+    if not plan:
+        return ""
+    tagged = [
+        a["label"]
+        for a in plan.get("allocations", [])
+        if a.get("tracking_mode") == "tagged"
+    ]
+    if not tagged:
+        return ""
+    return (
+        "ACTIVE ALLOCATION BUCKETS (valid expense tags): " + ", ".join(tagged) + ".\n"
+        "\"Daily Spending\" is the catch-all for general expenses."
+    )
+
+
 PDF_PARSER_TEMPLATE = """
 You are a financial statement parser for a Malaysian personal finance app.
 
@@ -181,12 +209,15 @@ For each transaction:
   INCOME (money in / credit / deposit / salary / transfer received).
 - Infer the category or source from the merchant name or description.
 
+{plan_context}
+
 Each EXPENSE object must have:
 - type: "expense"
 - amount: a positive number (no currency symbols, no commas)
 - category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
 - description: a short description (the merchant or narration), or null if unclear
 - date: in YYYY-MM-DD format
+- allocation: the salary-plan bucket this expense belongs to (see Allocation rules)
 
 Each INCOME object must have:
 - type: "income"
@@ -194,6 +225,15 @@ Each INCOME object must have:
 - source: one of [Salary, Transfer, Interest, Other]
 - description: a short description (the payer or narration), or null if unclear
 - date: in YYYY-MM-DD format
+
+Allocation rules (EXPENSE rows only):
+- Choose EXACTLY ONE label from the active allocation buckets listed above.
+- Infer it from the description (e.g. a transfer described as "mom" -> Mom,
+  a car instalment -> Car Loan).
+- If you are unsure which bucket fits, use "Daily Spending".
+- NEVER output "Savings" as an allocation — it is not a transaction tag.
+- If NO allocation buckets are listed above, set allocation to null.
+- INCOME rows never have an allocation; set it to null (or omit it).
 
 Rules:
 - Extract ALL transactions you can find, in order.
@@ -207,11 +247,16 @@ Rules:
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 """
 
-def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
+def parse_pdf_transactions(pdf_bytes: bytes, plan: dict | None = None) -> list[dict]:
     pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
+    prompt_text = PDF_PARSER_TEMPLATE.format(
+        today=date.today().isoformat(),
+        plan_context=_format_plan_for_prompt(plan),
+    )
+
     message = HumanMessage(content=[
-        {"type": "text", "text": PDF_PARSER_TEMPLATE.format(today=date.today().isoformat())},
+        {"type": "text", "text": prompt_text},
         {
             "type": "file",
             "source_type": "base64",
@@ -240,6 +285,29 @@ def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
             "Make sure it is a readable bank statement and try again."
         ) from e
 
+def _format_allocation_actuals_for_prompt(plan: dict | None, actuals: list[dict]) -> str:
+    """Render the deterministic planned-vs-actual table as prompt text.
+
+    These figures are computed in db.get_allocation_actuals (Python) — the advisor
+    must NOT recompute them. Returns "" when there is no active plan, so the
+    advice template's allocation section stays empty and advice is unchanged.
+    """
+    if not plan or not actuals:
+        return ""
+    lines = [
+        f"The user set a salary allocation plan (salary basis: RM{plan['salary']:.2f}).",
+        "These planned-vs-actual figures are ALREADY COMPUTED. Reference them; do NOT recalculate.",
+    ]
+    for r in actuals:
+        lines.append(
+            f"- {r['label']} ({r['tracking_mode']}): "
+            f"target RM{r['target_rm']:.2f}, actual RM{r['actual_rm']:.2f}, "
+            f"variance RM{r['variance_rm']:.2f} "
+            f"({'over' if r['variance_rm'] > 0 else 'under/on-target'})"
+        )
+    return "\n".join(lines)
+
+
 ADVISOR_TEMPLATE = """
 You are a friendly and practical personal finance advisor for a Malaysian user.
 
@@ -257,6 +325,9 @@ INCOME HISTORY FOR {period}:
 EXPENSE HISTORY FOR {period}:
 {expenses}
 
+SALARY ALLOCATION ADHERENCE FOR {period}:
+{allocation_plan}
+
 Based on this data, provide:
 1. An overview of {period} — how much they earned, spent, and saved that month
 2. Their latest current balance and what it means for them right now
@@ -264,6 +335,10 @@ Based on this data, provide:
    (a good savings rate is 20% or above)
 4. Which expense category they should control to improve their finances
 5. Two or three concrete actionable tips based on their situation
+6. If a SALARY ALLOCATION ADHERENCE section is present above, comment on how well
+   they stuck to each bucket (over / under / on-target), and call out the Savings
+   result specifically. Those numbers are pre-computed — reference them, do NOT
+   recalculate. If that section is empty, skip this point entirely.
 
 Rules:
 - Be specific — always reference actual RM amounts from the data
@@ -271,6 +346,8 @@ Rules:
 - All income/expense/savings figures refer to {period}
 - Keep your response conversational and encouraging, not robotic
 - Never make up numbers that are not in the data
+- For Savings, beating the target (actual above target) is GOOD; falling short is
+  what to flag. For spending buckets, going over target is what to flag.
 
 Situation rules:
 - If income contains Salary entries → focus on savings rate and monthly budget
@@ -304,13 +381,19 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
     }
     period = date(year, month, 1).strftime("%B %Y")
 
+    # Deterministic planned-vs-actual table (Python math, not the LLM's). Stays
+    # empty when there is no active plan, leaving the advice otherwise unchanged.
+    plan = get_active_plan()
+    actuals = get_allocation_actuals(year, month) if plan else []
+    allocation_block = _format_allocation_actuals_for_prompt(plan, actuals)
+
     expenses_json = json.dumps(expenses, indent=2)
     income_json = json.dumps(income, indent=2)
     summary_json = json.dumps(summary, indent=2)
     balance_json = json.dumps(balance, indent=2)
 
     prompt = PromptTemplate(
-        input_variables=["period", "summary", "income", "expenses", "balance"],
+        input_variables=["period", "summary", "income", "expenses", "balance", "allocation_plan"],
         template=ADVISOR_TEMPLATE
     )
 
@@ -322,7 +405,8 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
             "summary": summary_json,
             "income": income_json,
             "expenses": expenses_json,
-            "balance": balance_json
+            "balance": balance_json,
+            "allocation_plan": allocation_block,
         }))
     except APIError as e:
         raise ValueError(_friendly_api_error(e)) from e
