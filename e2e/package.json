@@ -1,0 +1,15 @@
+{
+  "name": "chatmoney-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright end-to-end tests for ChatMoney. Drives the real Next.js UI in a browser with the backend mocked via page.route(), so no Supabase/Gemini secrets are needed.",
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
