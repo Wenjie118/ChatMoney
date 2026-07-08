@@ -378,74 +378,84 @@ def get_spending_analysis(month: int | None = None, year: int | None = None) -> 
     # `int | None` = "an int OR None" (PEP 604 union type). Like Java's
     # @Nullable Integer; the `| None` plus the `= None` default lets callers
     # omit the argument. Same shape as get_advice's signature.
+    today = date.today()
 
-    # 1. Default month/year to today (copy get_advice's `month or today.month`
-    #    pattern — in Python `a or b` returns b when a is None/0).
-    # TODO
+    # 1. Default month/year to today (`a or b` returns b when a is None/0).
+    month = month or today.month
+    year = year or today.year
 
     # 2. Pull PROVISIONAL expenses (bounded to today for the current month).
-    # TODO: expenses = get_expenses_until_today(month=month, year=year)
+    expenses = get_expenses_until_today(month=month, year=year)
 
     # 3. Compute everything IN CODE. The LLM does NO arithmetic.
 
     #    days_in_month -> calendar.monthrange(year, month)[1]
     #    (monthrange returns a (weekday_of_1st, num_days) tuple; [1] = day count)
-    # TODO
+    days_in_month = calendar.monthrange(year, month)[1]
 
     #    days_elapsed:
-    #      - if this is the current real month -> today's day number (date.today().day)
-    #      - otherwise (a past/closed month)   -> days_in_month (treat as full month)
-    #    Compare against date.today() to decide which case you're in.
-    # TODO
+    #      - current real month -> today's day number
+    #      - past/future month  -> the full month (treat as complete)
+    if month == today.month and year == today.year:
+        days_elapsed = today.day
+    else:
+        days_elapsed = days_in_month
 
-    #    per-category totals -> a dict: category(str) -> summed amount(float).
-    #    Readable approach: start with an empty dict and accumulate in a loop:
-    #        totals[cat] = totals.get(cat, 0.0) + e["amount"]
+    #    per-category totals -> dict: category(str) -> summed amount(float).
     #    dict.get(key, default) returns the default instead of raising KeyError
-    #    (Java's Map.get would return null here). collections.defaultdict(float)
-    #    is the idiomatic alternative if you'd rather not call .get each time.
-    # TODO
+    #    (Java's Map.get would return null here).
+    category_totals: dict[str, float] = {}
+    for e in expenses:
+        cat = e["category"]
+        category_totals[cat] = category_totals.get(cat, 0.0) + e["amount"]
 
-    #    total_so_far -> sum the amounts. `sum(e["amount"] for e in expenses)`
-    #    uses a generator expression (lazy one-liner, like a Java stream
-    #    .mapToDouble(...).sum()). get_advice uses this exact idiom.
-    # TODO
+    #    round each category total to 2 dp (money).
+    category_totals = {cat: round(total, 2) for cat, total in category_totals.items()}
 
-    #    per-category projection = total / days_elapsed * days_in_month.
-    #    A DICT COMPREHENSION is the clean way to transform one dict into another:
-    #        { cat: round(total / days_elapsed * days_in_month, 2)
-    #          for cat, total in category_totals.items() }
-    #    Read it as "build {key: value} for each pair". .items() yields
-    #    (key, value) tuples and the `for cat, total` unpacks each tuple.
-    # TODO
+    #    total_so_far -> `sum(...)` over a generator expression (lazy one-liner,
+    #    like a Java stream .mapToDouble(...).sum()).
+    total_so_far = round(sum(category_totals.values()), 2)
 
-    #    Round all money to 2 dp with round(x, 2) — both spent_so_far and the
-    #    projections.
+    #    per-category linear projection = total / days_elapsed * days_in_month.
+    #    DICT COMPREHENSION: "build {key: value} for each pair"; .items() yields
+    #    (key, value) tuples and `for cat, total` unpacks each tuple.
+    projections = {
+        cat: round(total / days_elapsed * days_in_month, 2)
+        for cat, total in category_totals.items()
+    }
 
-    # 4. Build the summary dict, then JSON-dump it for the prompt
-    #    (json.dumps(summary, indent=2), exactly like get_advice). Suggested shape:
-    #        {
-    #          "days_elapsed":  ...,
-    #          "days_in_month": ...,
-    #          "total_so_far":  ...,
-    #          "categories": {
-    #              "<category>": {"spent_so_far": ..., "projected_month_end": ...},
-    #              ...
-    #          },
-    #        }
-    #    A nested dict comprehension over your category totals builds "categories".
-    # TODO
+    # 4. Build the summary dict, then JSON-dump it for the prompt.
+    summary = {
+        "days_elapsed": days_elapsed,
+        "days_in_month": days_in_month,
+        "total_so_far": total_so_far,
+        "categories": {
+            cat: {
+                "spent_so_far": total,
+                "projected_month_end": projections[cat],
+            }
+            for cat, total in category_totals.items()
+        },
+    }
+    summary_json = json.dumps(summary, indent=2)
 
-    #    period string for the prompt: date(year, month, 1).strftime("%B %Y")
-    #    -> e.g. "June 2026" (same as get_advice).
-    # TODO
+    #    period string, e.g. "June 2026" (same idiom as get_advice).
+    period = date(year, month, 1).strftime("%B %Y")
 
-    # 5. Wire up the LLM call (mirror get_advice's structure exactly):
-    #    - prompt = PromptTemplate(input_variables=["period", "summary"],
-    #                              template=SPENDING_ANALYSIS_TEMPLATE)
-    #    - chain = prompt | advisor_llm
-    #    - response = _invoke_with_retry(lambda: chain.invoke({...}))
-    #    - wrap APIError -> ValueError(_friendly_api_error(e)) from e
-    #    - return _content_to_text(response.content).strip()
-    # TODO
-    ...
+    # 5. Wire up the LLM call (mirror get_advice's structure exactly).
+    prompt = PromptTemplate(
+        input_variables=["period", "summary"],
+        template=SPENDING_ANALYSIS_TEMPLATE
+    )
+
+    chain = prompt | advisor_llm
+
+    try:
+        response = _invoke_with_retry(lambda: chain.invoke({
+            "period": period,
+            "summary": summary_json,
+        }))
+    except APIError as e:
+        raise ValueError(_friendly_api_error(e)) from e
+
+    return _content_to_text(response.content).strip()
