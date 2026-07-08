@@ -9,6 +9,14 @@
  *   mutate `rows` in place (rows[i].amount = ...). Instead we build a fresh array
  *   with .map()/.filter() and hand it to setRows. That's why every helper below
  *   returns a new array.
+ *
+ * KEY REACT IDEA — stable row keys:
+ *   Rows can be added and deleted, so the array index is NOT a stable identity —
+ *   after a delete the indices shift and React would reconcile the controlled
+ *   inputs onto the wrong logical row (mis-applied edits/focus). We therefore wrap
+ *   each transaction in an `EditableRow` that carries a unique `id`, assigned when
+ *   rows load and when a row is added, and use that id as the React `key`. The id
+ *   is UI-only bookkeeping and is stripped before saving to the backend.
  */
 "use client";
 
@@ -35,27 +43,45 @@ function blankRow(): ITransaction {
   };
 }
 
+/** A transaction plus a client-only, stable id used as the React key. The id is
+ *  never sent to the backend — see how handleSave() maps it away. */
+interface EditableRow {
+  id: string;
+  data: ITransaction;
+}
+
+/** Monotonic counter for row ids. Only needs to be unique within one list, and a
+ *  simple counter avoids any crypto/secure-context concerns of randomUUID(). */
+let rowIdCounter = 0;
+function makeRow(data: ITransaction): EditableRow {
+  return { id: `row-${rowIdCounter++}`, data };
+}
+
 export default function TransactionPreview({ initialRows, onSaved }: Props) {
-  // Local editable copy of the rows. All edits stay here until "Confirm & Save".
-  const [rows, setRows] = useState<ITransaction[]>(initialRows);
+  // Local editable copy of the rows, each tagged with a stable id. All edits stay
+  // here until "Confirm & Save". Lazy initializer so ids are assigned once, when
+  // the rows first load (the parent remounts us via `key` for a new PDF).
+  const [rows, setRows] = useState<EditableRow[]>(() => initialRows.map(makeRow));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  /** Immutably update ONE field of ONE row. */
-  function updateRow(index: number, field: keyof ITransaction, value: string | number) {
+  /** Immutably update ONE field of the row with the given id. */
+  function updateRow(id: string, field: keyof ITransaction, value: string | number) {
     setRows((prev) =>
-      prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
+      prev.map((row) =>
+        row.id === id ? { ...row, data: { ...row.data, [field]: value } } : row,
+      ),
     );
   }
 
-  /** Remove the row at `index`. */
-  function deleteRow(index: number) {
-    setRows((prev) => prev.filter((_, i) => i !== index));
+  /** Remove the row with the given id. */
+  function deleteRow(id: string) {
+    setRows((prev) => prev.filter((row) => row.id !== id));
   }
 
   /** Append a fresh blank row at the bottom. */
   function addRow() {
-    setRows((prev) => [...prev, blankRow()]);
+    setRows((prev) => [...prev, makeRow(blankRow())]);
   }
 
   /** Send every row to the backend's bulk-save endpoint. */
@@ -64,7 +90,8 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
     setSaving(true);
     setMessage(null);
     try {
-      const result = await saveMultiple(rows);
+      // Strip the UI-only ids; the backend only ever sees ITransaction data.
+      const result = await saveMultiple(rows.map((row) => row.data));
       setMessage(`✅ Saved ${result.saved} of ${result.total} transactions.`);
       onSaved?.(result);
     } catch (err) {
@@ -96,20 +123,20 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className="border-t">
+            {rows.map(({ id, data }) => (
+              <tr key={id} className="border-t">
                 <td className="p-1">
                   <input
                     className="w-28 rounded border px-2 py-1"
-                    value={row.date}
-                    onChange={(e) => updateRow(i, "date", e.target.value)}
+                    value={data.date}
+                    onChange={(e) => updateRow(id, "date", e.target.value)}
                   />
                 </td>
                 <td className="p-1">
                   <select
                     className="rounded border px-2 py-1"
-                    value={row.type}
-                    onChange={(e) => updateRow(i, "type", e.target.value)}
+                    value={data.type}
+                    onChange={(e) => updateRow(id, "type", e.target.value)}
                   >
                     <option value="expense">expense</option>
                     <option value="income">income</option>
@@ -118,27 +145,27 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                 <td className="p-1">
                   <input
                     className="w-full rounded border px-2 py-1"
-                    value={row.description ?? ""}
-                    onChange={(e) => updateRow(i, "description", e.target.value)}
+                    value={data.description ?? ""}
+                    onChange={(e) => updateRow(id, "description", e.target.value)}
                   />
                 </td>
                 <td className="p-1">
                   <select
                     className="w-36 rounded border px-2 py-1"
-                    value={row.category_or_source ?? ""}
-                    onChange={(e) => updateRow(i, "category_or_source", e.target.value)}
+                    value={data.category_or_source ?? ""}
+                    onChange={(e) => updateRow(id, "category_or_source", e.target.value)}
                   >
                     {/* Options come from the canonical lists in lib/constants.ts,
                         switched by row type (expense=categories, income=sources). */}
                     {/* Safety: if the parsed value isn't a known option (rare),
                         keep it as an option so the data isn't silently changed. */}
-                    {row.category_or_source &&
-                      !optionsForType(row.type).includes(row.category_or_source) && (
-                        <option value={row.category_or_source}>
-                          {row.category_or_source}
+                    {data.category_or_source &&
+                      !optionsForType(data.type).includes(data.category_or_source) && (
+                        <option value={data.category_or_source}>
+                          {data.category_or_source}
                         </option>
                       )}
-                    {optionsForType(row.type).map((opt) => (
+                    {optionsForType(data.type).map((opt) => (
                       <option key={opt} value={opt}>
                         {opt}
                       </option>
@@ -150,16 +177,16 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                     type="number"
                     step="0.01"
                     className="w-24 rounded border px-2 py-1"
-                    value={row.amount}
+                    value={data.amount}
                     // <input type=number> still yields a string; coerce to a real number.
-                    onChange={(e) => updateRow(i, "amount", Number(e.target.value))}
+                    onChange={(e) => updateRow(id, "amount", Number(e.target.value))}
                   />
                 </td>
-                <td className="p-2 text-center text-gray-500">{row.count ?? 1}</td>
+                <td className="p-2 text-center text-gray-500">{data.count ?? 1}</td>
                 <td className="p-1">
                   <button
                     className="rounded px-2 py-1 text-red-600 hover:bg-red-50"
-                    onClick={() => deleteRow(i)}
+                    onClick={() => deleteRow(id)}
                     aria-label="Delete row"
                   >
                     🗑️
