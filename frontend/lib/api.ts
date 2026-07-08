@@ -14,6 +14,7 @@ import type {
   ITransaction,
   IAdviceRequest,
   IAdviceResponse,
+  ISpendingAnalysisResponse,
   ISaveMultipleResult,
   IMonthlySummary,
   IPeriod,
@@ -197,6 +198,27 @@ export async function getAdvice(req: IAdviceRequest): Promise<IAdviceResponse> {
     return await handle<IAdviceResponse>(res);
   } catch (err) {
     console.error("getAdvice failed:", err);
+    throw err;
+  }
+}
+
+/**
+ * POST /advisor/spending — get the mid-month, provisional, expense-only spending
+ * analysis for a month. Same request shape as getAdvice ({month?, year?}); the
+ * response has an `analysis` string instead of `advice`.
+ */
+export async function getSpendingAnalysis(
+  req: IAdviceRequest,
+): Promise<ISpendingAnalysisResponse> {
+  try {
+    const res = await fetch(`${API_URL}/advisor/spending`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req), // must match AdviceRequest { month?, year? }
+    });
+    return await handle<ISpendingAnalysisResponse>(res);
+  } catch (err) {
+    console.error("getSpendingAnalysis failed:", err);
     throw err;
   }
 }

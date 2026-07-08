@@ -116,3 +116,11 @@ class AdviceRequest(BaseModel):
 class AdviceResponse(BaseModel):
     advice: str
 
+
+class SpendingAnalysisResponse(BaseModel):
+    """Response from POST /advisor/spending — the mid-month, provisional,
+    expense-only spending analysis text. Reuses AdviceRequest for input (same
+    optional month/year). Named `analysis` (not `advice`) to keep the two
+    advisors' contracts distinct. Mirror this in frontend/lib/types.ts."""
+    analysis: str
+

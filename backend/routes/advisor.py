@@ -14,9 +14,9 @@ Existing function (VERIFIED):
 
 from fastapi import APIRouter, HTTPException
 
-from llm import get_advice
+from llm import get_advice, get_spending_analysis
 from db import get_logged_periods, DatabaseConnectionError
-from schemas.models import AdviceRequest, AdviceResponse
+from schemas.models import AdviceRequest, AdviceResponse, SpendingAnalysisResponse
 
 router = APIRouter()
 
@@ -39,6 +39,27 @@ def get_financial_advice(payload: AdviceRequest) -> AdviceResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return AdviceResponse(advice=advice)
+
+
+@router.post("/spending", response_model=SpendingAnalysisResponse)
+def get_spending_analysis_endpoint(payload: AdviceRequest) -> SpendingAnalysisResponse:
+    """Return the mid-month, provisional, expense-only spending analysis.
+
+    Sibling of /advice but a different question: it looks at spending SO FAR in
+    the chosen month and projects where it's heading, rather than reviewing a
+    completed month. Thin like /advice — it forwards the optional month/year to
+    llm.get_spending_analysis, which fetches the to-date expenses and calls Gemini
+    internally (defaulting to the current month when month/year are None).
+
+    Same error mapping as /advice: dependency failures (Gemini busy / Supabase
+    down) surface as 503, not user input errors.
+    """
+    try:
+        analysis = get_spending_analysis(month=payload.month, year=payload.year)
+    except (ValueError, DatabaseConnectionError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return SpendingAnalysisResponse(analysis=analysis)
 
 
 @router.get("/periods")
