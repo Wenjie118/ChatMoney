@@ -45,6 +45,12 @@ export interface IAdviceResponse {
   // period?: string;
 }
 
+/** Response from POST /advisor/spending — the mid-month provisional,
+ *  expense-only spending analysis. Reuses IAdviceRequest for the request. */
+export interface ISpendingAnalysisResponse {
+  analysis: string;
+}
+
 /** One {year, month} pair that has logged data — from GET /advisor/periods.
  *  Used to populate the Advisor's month dropdown with only months that exist. */
 export interface IPeriod {
