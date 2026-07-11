@@ -2,6 +2,7 @@ import os
 import base64
 import time
 import calendar
+import logging
 from datetime import date
 import json
 
@@ -11,6 +12,8 @@ from langchain_core.messages import HumanMessage
 from google.genai.errors import APIError
 
 from db import get_expenses, get_expenses_until_today, get_income, get_balance
+
+logger = logging.getLogger(__name__)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -230,12 +233,16 @@ def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
         return _extract_json_array(response.content)
     except (json.JSONDecodeError, ValueError) as e:
         raw = _content_to_text(response.content)
-        print("=" * 60)
-        print("[parse_pdf_transactions] Failed to parse Gemini output.")
-        print(f"  error: {e}")
-        print(f"  content length: {len(raw)}")
-        print(f"  raw output (first 3000 chars):\n{raw[:3000]}")
-        print("=" * 60)
+        # Warning-level: a concise, safe one-liner (no giant payload on stdout).
+        logger.warning(
+            "parse_pdf_transactions: failed to parse Gemini output (%s); content length=%d",
+            e, len(raw),
+        )
+        # Debug-level: the actual raw output, truncated. Only surfaces when debug
+        # logging is enabled, so we can diagnose without leaking big payloads by default.
+        logger.debug(
+            "parse_pdf_transactions raw output (first 3000 chars):\n%s", raw[:3000]
+        )
         raise ValueError(
             "Could not read transactions from this PDF. "
             "Make sure it is a readable bank statement and try again."
