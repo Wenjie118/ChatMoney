@@ -20,6 +20,7 @@ Relevant existing functions (VERIFIED against your current code):
     utils.transactions.consolidate_transactions(transactions) -> list[dict]   # port from app.py
 """
 
+import logging
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -43,6 +44,8 @@ from schemas.models import (
 )
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_pdf(pdf_bytes: bytes) -> None:
@@ -201,7 +204,7 @@ async def parse_pdf(file: UploadFile = File(...)) -> list[TransactionResponse]:
     """
     # Step 1 — pull the raw bytes off the multipart upload.
     pdf_bytes = await file.read()
-    print(f"[parse-pdf] received '{file.filename}' — {len(pdf_bytes)} bytes")
+    logger.info("parse-pdf received '%s' — %d bytes", file.filename, len(pdf_bytes))
 
     # Step 1b — reject empty / non-PDF / password-protected files up front, so the
     # user gets a clear message instead of Gemini's cryptic 'no pages' error.
