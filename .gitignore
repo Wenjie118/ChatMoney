@@ -11,3 +11,9 @@ next-env.d.ts
 
 # Backend env (also matched by the .env rule above, but explicit for clarity)
 backend/.env
+
+# E2E (Playwright) — build/report output (node_modules already covered above)
+e2e/test-results/
+e2e/playwright-report/
+e2e/blob-report/
+e2e/.playwright/
