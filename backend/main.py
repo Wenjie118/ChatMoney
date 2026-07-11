@@ -47,7 +47,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
+from db import DatabaseConnectionError
 from utils.cors import configure_cors
 from routes import balance, transactions, advisor
 
@@ -103,6 +105,31 @@ async def log_requests(request: Request, call_next):
         request.method, request.url.path, response.status_code, elapsed_ms,
     )
     return response
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+#
+# Map domain errors to HTTP responses in ONE place, so routes don't each repeat
+# the same try/except. Both return the same {"detail": ...} envelope FastAPI's
+# HTTPException produces, so the frontend's error handling is unchanged.
+#
+#   DatabaseConnectionError -> 503  (Supabase unreachable — a dependency is down)
+#   ValueError              -> 422  (unparseable input / domain rule violation)
+#
+# NOTE: a route that needs a *different* mapping (e.g. the advisor treats a busy
+# LLM's ValueError as a 503, not a 422) still catches it locally and raises its
+# own HTTPException — that wins because the ValueError never escapes the route.
+# ---------------------------------------------------------------------------
+@app.exception_handler(DatabaseConnectionError)
+async def handle_db_connection_error(request: Request, exc: DatabaseConnectionError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValueError)
+async def handle_value_error(request: Request, exc: ValueError):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
 
 # ---------------------------------------------------------------------------
 # Routers — each file in routes/ exposes an `APIRouter` named `router`.

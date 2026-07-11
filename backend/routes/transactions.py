@@ -32,7 +32,6 @@ from db import (
     save_multiple_transactions,
     get_expenses,
     get_income,
-    DatabaseConnectionError,
 )
 from utils.transactions import consolidate_transactions
 from schemas.models import (
@@ -139,51 +138,47 @@ def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
         4. Build a TransactionResponse for each saved row to send back, flattening
            category/source into one `category_or_source` field.
 
-    Errors:
+    Errors (mapped centrally by the global handlers in main.py):
         - llm raises ValueError on a bad/empty parse or busy AI -> 422.
-        - db raises DatabaseConnectionError if Supabase is down       -> 503.
+        - db raises DatabaseConnectionError if Supabase is down  -> 503.
     """
-    # Step 2 — parse (LLM call).
-    try:
-        parsed = parse_transaction(payload.text)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Step 2 — parse (LLM call). A ValueError here (unparseable / busy AI) escapes
+    # to the global handler -> 422.
+    parsed = parse_transaction(payload.text)
 
     # Step 3 + 4 — clean/validate each parsed row, then save it and build the
     # response. Unsaveable rows (unknown type, missing/non-positive amount) are
     # skipped rather than crashing the whole request, so the valid rows in the same
-    # message still get saved.
+    # message still get saved. A DatabaseConnectionError escapes to the global
+    # handler -> 503.
     saved: list[TransactionResponse] = []
-    try:
-        for t in parsed:
-            row = _clean_parsed_row(t)
-            if row is None:
-                continue
+    for t in parsed:
+        row = _clean_parsed_row(t)
+        if row is None:
+            continue
 
-            if row["type"] == "income":
-                save_income(
-                    amount=row["amount"],
-                    source=row["category_or_source"],
-                    income_date=row["date"],
-                    desc=row["description"],
-                )
-            else:  # expense
-                save_expense(
-                    amount=row["amount"],
-                    category=row["category_or_source"],
-                    expense_date=row["date"],
-                    desc=row["description"],
-                )
-
-            saved.append(TransactionResponse(
-                type=row["type"],
+        if row["type"] == "income":
+            save_income(
                 amount=row["amount"],
-                category_or_source=row["category_or_source"],
-                description=row["description"],
-                date=row["date"],
-            ))
-    except DatabaseConnectionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+                source=row["category_or_source"],
+                income_date=row["date"],
+                desc=row["description"],
+            )
+        else:  # expense
+            save_expense(
+                amount=row["amount"],
+                category=row["category_or_source"],
+                expense_date=row["date"],
+                desc=row["description"],
+            )
+
+        saved.append(TransactionResponse(
+            type=row["type"],
+            amount=row["amount"],
+            category_or_source=row["category_or_source"],
+            description=row["description"],
+            date=row["date"],
+        ))
 
     return saved
 
@@ -210,12 +205,10 @@ async def parse_pdf(file: UploadFile = File(...)) -> list[TransactionResponse]:
     # user gets a clear message instead of Gemini's cryptic 'no pages' error.
     _validate_pdf(pdf_bytes)
 
-    # Step 2 + 3 — parse with the LLM, then merge duplicates.
-    try:
-        parsed = parse_pdf_transactions(pdf_bytes)
-    except ValueError as exc:
-        # Unreadable PDF, nothing parseable, or the AI model was busy/errored.
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Step 2 + 3 — parse with the LLM, then merge duplicates. An unreadable PDF /
+    # nothing parseable / busy AI raises ValueError, mapped to 422 by the global
+    # handler in main.py.
+    parsed = parse_pdf_transactions(pdf_bytes)
 
     consolidated = consolidate_transactions(parsed)
 
@@ -244,11 +237,9 @@ def recent_transactions(
     month = month or today.month
     year = year or today.year
 
-    try:
-        expenses = get_expenses(month=month, year=year)
-        income = get_income(month=month, year=year)
-    except DatabaseConnectionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # A Supabase outage raises DatabaseConnectionError -> 503 (global handler).
+    expenses = get_expenses(month=month, year=year)
+    income = get_income(month=month, year=year)
 
     rows: list[TransactionResponse] = []
     for e in expenses:
@@ -281,12 +272,11 @@ def summary(month: int, year: int) -> SummaryResponse:
     dashboard always knows which month it's showing. db.get_monthly_summary() does
     the same math but is hard-wired to the current month — we replicate it for any
     month using get_expenses/get_income.
+
+    A Supabase outage raises DatabaseConnectionError -> 503 (global handler).
     """
-    try:
-        expenses = get_expenses(month=month, year=year)
-        income = get_income(month=month, year=year)
-    except DatabaseConnectionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    expenses = get_expenses(month=month, year=year)
+    income = get_income(month=month, year=year)
 
     total_income = sum(i["amount"] for i in income)
     total_expenses = sum(e["amount"] for e in expenses)
@@ -326,10 +316,9 @@ def save_multiple(payload: list[TransactionRequest]) -> SaveMultipleResponse:
         for t in payload
     ]
 
-    try:
-        result = save_multiple_transactions(rows)
-    except DatabaseConnectionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # A total Supabase outage raises DatabaseConnectionError -> 503 (global
+    # handler); per-row failures are counted in the returned {saved, failed}.
+    result = save_multiple_transactions(rows)
 
     # result is {"total": ..., "saved": ..., "failed": ...}
     return SaveMultipleResponse(**result)

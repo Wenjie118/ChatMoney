@@ -15,11 +15,11 @@ closely; every other endpoint follows the same shape:
     5. Translate domain errors (DatabaseConnectionError) into HTTP errors.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 # db.py lives at the project root; it's importable thanks to the sys.path line
-# in main.py. We import the function we need plus the custom exception it raises.
-from db import get_balance, set_balance, DatabaseConnectionError
+# in main.py.
+from db import get_balance, set_balance
 from schemas.models import BalanceResponse, SetBalanceRequest
 
 router = APIRouter()
@@ -36,19 +36,14 @@ def read_balance() -> BalanceResponse:
         {"current_balance": float, "manual_balance": float, "last_updated": str|None}
 
     `response_model=BalanceResponse` makes FastAPI validate & shape the output and
-    document it at /docs. We catch `DatabaseConnectionError` and re-raise it as a
-    503 so the frontend receives a clean JSON error instead of a 500 stack trace.
+    document it at /docs. If Supabase is unreachable, `get_balance` raises
+    `DatabaseConnectionError`, which the global handler in main.py turns into a
+    clean 503 JSON response instead of a 500 stack trace.
 
     Reachable at GET /balance  (the "" path + the "/balance" prefix from main.py).
     """
-    try:
-        data = get_balance()
-    except DatabaseConnectionError as exc:
-        # 503 Service Unavailable — the DB is unreachable, not the client's fault.
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
     # FastAPI coerces this dict into BalanceResponse and returns it as JSON.
-    return BalanceResponse(**data)
+    return BalanceResponse(**get_balance())
 
 
 # ===========================================================================
@@ -62,11 +57,9 @@ def update_balance(payload: SetBalanceRequest) -> BalanceResponse:
     latest balance (recomputed from that anchor + any later income/expenses). We
     return the refreshed snapshot — typed as BalanceResponse — so the frontend can
     update the card from the response without a second request.
-    """
-    try:
-        set_balance(payload.amount)
-        data = get_balance()
-    except DatabaseConnectionError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    return BalanceResponse(**data)
+    A Supabase outage raises `DatabaseConnectionError`, mapped to 503 by the
+    global handler in main.py.
+    """
+    set_balance(payload.amount)
+    return BalanceResponse(**get_balance())
