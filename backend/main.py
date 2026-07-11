@@ -26,7 +26,10 @@ HOW TO RUN (frontend)  — see frontend/README or package.json
 ────────────────────────────────────────────────────────────────────────────
 """
 
+import logging
+import os
 import sys
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -43,10 +46,26 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
+from db import DatabaseConnectionError
 from utils.cors import configure_cors
 from routes import balance, transactions, advisor
+
+# ---------------------------------------------------------------------------
+# Logging
+#
+# Configure the root logger once, at the app entry point, so our own modules
+# (this file, llm.py's logger, etc.) emit to stdout at a level you can tune via
+# the LOG_LEVEL env var (default INFO). Uvicorn keeps its own access log; this
+# gives *our* code a consistent, structured channel instead of stray print()s.
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("chatmoney.request")
 
 # ---------------------------------------------------------------------------
 # App instance
@@ -60,12 +79,57 @@ app = FastAPI(
 # CORS: allow the frontend origin to call this API (see utils/cors.py).
 configure_cors(app)
 
-# TODO (middleware): add any cross-cutting middleware here, e.g.
-#   - request logging / timing
-#   - global exception handler that turns DatabaseConnectionError into a clean
-#     503 JSON response instead of a 500 stack trace
-#   - rate limiting
-# Pattern:  app.add_middleware(SomeMiddleware, ...)
+
+# ---------------------------------------------------------------------------
+# Request logging / timing middleware
+#
+# Logs method, path, status code, and elapsed ms for every request. LLM and
+# Supabase calls can be slow, so this gives basic visibility into latency and
+# failure rates. Overhead is a single perf_counter() pair per request.
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.exception(
+            "%s %s -> unhandled error (%.1f ms)",
+            request.method, request.url.path, elapsed_ms,
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "%s %s -> %d (%.1f ms)",
+        request.method, request.url.path, response.status_code, elapsed_ms,
+    )
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+#
+# Map domain errors to HTTP responses in ONE place, so routes don't each repeat
+# the same try/except. Both return the same {"detail": ...} envelope FastAPI's
+# HTTPException produces, so the frontend's error handling is unchanged.
+#
+#   DatabaseConnectionError -> 503  (Supabase unreachable — a dependency is down)
+#   ValueError              -> 422  (unparseable input / domain rule violation)
+#
+# NOTE: a route that needs a *different* mapping (e.g. the advisor treats a busy
+# LLM's ValueError as a 503, not a 422) still catches it locally and raises its
+# own HTTPException — that wins because the ValueError never escapes the route.
+# ---------------------------------------------------------------------------
+@app.exception_handler(DatabaseConnectionError)
+async def handle_db_connection_error(request: Request, exc: DatabaseConnectionError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValueError)
+async def handle_value_error(request: Request, exc: ValueError):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
 
 # ---------------------------------------------------------------------------
 # Routers — each file in routes/ exposes an `APIRouter` named `router`.

@@ -1,0 +1,10 @@
+# Backend test/dev dependencies.
+#
+# Install with:  pip install -r requirements-dev.txt
+# (in addition to requirements.txt). Then run the suite from backend/:
+#   python -m pytest
+
+-r requirements.txt
+
+pytest
+# httpx is already pulled in via supabase, and FastAPI's TestClient uses it.

@@ -1,13 +1,15 @@
 /**
  * Shared constants for the frontend.
  *
- * IMPORTANT — keep these in sync with the backend prompt in `llm.py`
- * (PARSER_TEMPLATE / PDF_PARSER_TEMPLATE). The LLM is instructed to only ever
- * output one of these values, so the review dropdowns offer exactly the same set.
- * If you change the allowed categories/sources, change them in BOTH places.
+ * SOURCE OF TRUTH — the backend owns these lists. `llm.py` defines
+ * `EXPENSE_CATEGORIES` / `INCOME_SOURCES` and injects them into the parser
+ * prompts, so the values the LLM may emit come from there. This file is the
+ * frontend MIRROR that drives the review dropdowns, and it must be kept in sync
+ * with `llm.py`: if you change the allowed categories/sources, change them in
+ * BOTH places (backend `llm.py` first, then here).
  */
 
-/** Allowed expense categories (llm.py: "category: one of [...]"). */
+/** Allowed expense categories — mirror of llm.py `EXPENSE_CATEGORIES`. */
 export const EXPENSE_CATEGORIES = [
   "Food",
   "Transport",
@@ -15,10 +17,11 @@ export const EXPENSE_CATEGORIES = [
   "Entertainment",
   "Health",
   "Bills",
+  "Transfer", // internal account move; pairs with the "Transfer" income source
   "Other",
 ] as const;
 
-/** Allowed income sources (llm.py: "source: one of [...]"). */
+/** Allowed income sources — mirror of llm.py `INCOME_SOURCES`. */
 export const INCOME_SOURCES = ["Salary", "Transfer", "Interest", "Other"] as const;
 
 /**

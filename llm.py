@@ -2,6 +2,7 @@ import os
 import base64
 import time
 import calendar
+import logging
 from datetime import date
 import json
 
@@ -10,7 +11,15 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from google.genai.errors import APIError
 
-from db import get_expenses, get_expenses_until_today, get_income, get_balance
+from db import (
+    get_expenses,
+    get_expenses_until_today,
+    get_income,
+    get_balance,
+    summarize_transactions,
+)
+
+logger = logging.getLogger(__name__)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -67,7 +76,39 @@ def _friendly_api_error(e: APIError) -> str:
         )
     return f"The AI service returned an error (code {code}). Please try again."
 
-PARSER_TEMPLATE = """
+
+# ===========================================================================
+# Canonical category / source lists — the SINGLE SOURCE OF TRUTH.
+#
+# These are injected into the parser prompts below (no hard-coded list in the
+# template text), so the values the LLM is allowed to emit can never silently
+# drift from this list. The frontend's `frontend/lib/constants.ts` mirrors these
+# (it drives the review dropdowns) — keep the two in sync; see the note there.
+# ===========================================================================
+EXPENSE_CATEGORIES = [
+    "Food",
+    "Transport",
+    "Shopping",
+    "Entertainment",
+    "Health",
+    "Bills",
+    "Transfer",
+    "Other",
+]
+
+INCOME_SOURCES = ["Salary", "Transfer", "Interest", "Other"]
+
+# "Transfer" labels a move between the user's OWN accounts — not real spending
+# or earning. Both legs (expense + income) net to zero in Balance / Net Savings.
+TRANSFER = "Transfer"
+
+
+def _format_options(options: list[str]) -> str:
+    """Render an option list as the "[A, B, C]" text the prompts embed."""
+    return "[" + ", ".join(options) + "]"
+
+
+_PARSER_TEMPLATE = """
 You are a financial transaction parser for a Malaysian personal finance app.
 
 First, determine if the user message describes an EXPENSE or INCOME.
@@ -83,14 +124,14 @@ Extract ALL transactions and return ONLY a JSON array.
 For EXPENSE items, each object must have:
 - type: "expense"
 - amount: a number (no currency symbols)
-- category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
+- category: one of {expense_categories}
 - description: a short description string, or null if unclear
 - date: in YYYY-MM-DD format
 
 For INCOME items, each object must have:
 - type: "income"
 - amount: a number (no currency symbols)
-- source: one of [Salary, Transfer, Interest, Other]
+- source: one of {income_sources}
 - description: a short description string, or null if unclear
 - date: in YYYY-MM-DD format
 
@@ -103,6 +144,14 @@ Rules:
 
 User message: {user_input}
 """
+
+# Inject the canonical lists once, at import. This leaves only {today} and
+# {user_input} as live PromptTemplate variables.
+PARSER_TEMPLATE = (
+    _PARSER_TEMPLATE
+    .replace("{expense_categories}", _format_options(EXPENSE_CATEGORIES))
+    .replace("{income_sources}", _format_options(INCOME_SOURCES))
+)
 
 def _content_to_text(content) -> str:
     """Normalize an LLM response's content into a plain string.
@@ -170,7 +219,7 @@ def parse_transaction(user_input: str) -> list[dict]:
             "Could not parse your message. Try rephrasing, e.g. 'Spent RM50 on groceries'."
         ) from e
 
-PDF_PARSER_TEMPLATE = """
+_PDF_PARSER_TEMPLATE = """
 You are a financial statement parser for a Malaysian personal finance app.
 
 You will be given a Malaysian bank statement PDF (e.g. Maybank, CIMB, Public Bank,
@@ -185,14 +234,14 @@ For each transaction:
 Each EXPENSE object must have:
 - type: "expense"
 - amount: a positive number (no currency symbols, no commas)
-- category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
+- category: one of {expense_categories}
 - description: a short description (the merchant or narration), or null if unclear
 - date: in YYYY-MM-DD format
 
 Each INCOME object must have:
 - type: "income"
 - amount: a positive number (no currency symbols, no commas)
-- source: one of [Salary, Transfer, Interest, Other]
+- source: one of {income_sources}
 - description: a short description (the payer or narration), or null if unclear
 - date: in YYYY-MM-DD format
 
@@ -207,6 +256,15 @@ Rules:
 - If no date can be determined for a row, use today's date: {today}
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 """
+
+# Inject the canonical lists once, at import. This leaves only {today} as a live
+# .format() field (filled in parse_pdf_transactions below).
+PDF_PARSER_TEMPLATE = (
+    _PDF_PARSER_TEMPLATE
+    .replace("{expense_categories}", _format_options(EXPENSE_CATEGORIES))
+    .replace("{income_sources}", _format_options(INCOME_SOURCES))
+)
+
 
 def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
     pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
@@ -230,12 +288,16 @@ def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
         return _extract_json_array(response.content)
     except (json.JSONDecodeError, ValueError) as e:
         raw = _content_to_text(response.content)
-        print("=" * 60)
-        print("[parse_pdf_transactions] Failed to parse Gemini output.")
-        print(f"  error: {e}")
-        print(f"  content length: {len(raw)}")
-        print(f"  raw output (first 3000 chars):\n{raw[:3000]}")
-        print("=" * 60)
+        # Warning-level: a concise, safe one-liner (no giant payload on stdout).
+        logger.warning(
+            "parse_pdf_transactions: failed to parse Gemini output (%s); content length=%d",
+            e, len(raw),
+        )
+        # Debug-level: the actual raw output, truncated. Only surfaces when debug
+        # logging is enabled, so we can diagnose without leaking big payloads by default.
+        logger.debug(
+            "parse_pdf_transactions raw output (first 3000 chars):\n%s", raw[:3000]
+        )
         raise ValueError(
             "Could not read transactions from this PDF. "
             "Make sure it is a readable bank statement and try again."
@@ -282,6 +344,30 @@ Situation rules:
 - current_balance is an estimate based on manual_balance plus transactions since last_updated — present it as an estimate, not a guaranteed figure
 """
 
+# Above this many expense rows in a month, send the advisor a compact
+# per-category breakdown instead of every individual row. The advice reasons over
+# category totals and the summary, not line items, so this keeps quality while
+# cutting prompt tokens (cost/latency, and context-limit risk) on busy months.
+ADVISOR_MAX_EXPENSE_ROWS = 40
+
+
+def _aggregate_expenses_by_category(expenses: list[dict]) -> dict:
+    """Collapse expense rows into {category: {total, count}} for the advisor prompt.
+
+    Preserves the real category names and RM amounts the advice must reference,
+    without shipping every individual transaction.
+    """
+    by_category: dict[str, dict] = {}
+    for e in expenses:
+        cat = e.get("category") or "Other"
+        entry = by_category.setdefault(cat, {"total": 0.0, "count": 0})
+        entry["total"] += e.get("amount", 0)
+        entry["count"] += 1
+    for entry in by_category.values():
+        entry["total"] = round(entry["total"], 2)
+    return by_category
+
+
 def get_advice(month: int | None = None, year: int | None = None) -> str:
     today = date.today()
     month = month or today.month
@@ -291,21 +377,23 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
     income = get_income(month=month, year=year)
     balance = get_balance()
 
-    total_income = sum(i["amount"] for i in income)
-    total_expenses = sum(e["amount"] for e in expenses)
-    net_savings = total_income - total_expenses
-    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
-
-    summary = {
-        "total_income": total_income,
-        "total_expenses": total_expenses,
-        "net_savings": net_savings,
-        "savings_rate": savings_rate,
-        "current_balance": balance["current_balance"],
-    }
+    # Shared math (same helper the DB summary and /transactions/summary use), plus
+    # the current-balance estimate the advisor prompt also references.
+    summary = summarize_transactions(income, expenses)
+    summary["current_balance"] = balance["current_balance"]
     period = date(year, month, 1).strftime("%B %Y")
 
-    expenses_json = json.dumps(expenses, indent=2)
+    # For busy months, aggregate expenses per category to keep the prompt compact;
+    # small months send the full row list unchanged (identical to before).
+    if len(expenses) > ADVISOR_MAX_EXPENSE_ROWS:
+        expenses_payload: object = {
+            "note": "aggregated per-category totals (many transactions this month)",
+            "expense_count": len(expenses),
+            "by_category": _aggregate_expenses_by_category(expenses),
+        }
+    else:
+        expenses_payload = expenses
+    expenses_json = json.dumps(expenses_payload, indent=2)
     income_json = json.dumps(income, indent=2)
     summary_json = json.dumps(summary, indent=2)
     balance_json = json.dumps(balance, indent=2)
@@ -407,6 +495,10 @@ def get_spending_analysis(month: int | None = None, year: int | None = None) -> 
     category_totals: dict[str, float] = {}
     for e in expenses:
         cat = e["category"]
+        if cat == TRANSFER:
+            # Internal account move, not real spending — keep it out of
+            # total_so_far, the per-category breakdown, and the projection.
+            continue
         category_totals[cat] = category_totals.get(cat, 0.0) + e["amount"]
 
     #    round each category total to 2 dp (money).
