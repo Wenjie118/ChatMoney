@@ -70,7 +70,34 @@ def _friendly_api_error(e: APIError) -> str:
         )
     return f"The AI service returned an error (code {code}). Please try again."
 
-PARSER_TEMPLATE = """
+
+# ===========================================================================
+# Canonical category / source lists — the SINGLE SOURCE OF TRUTH.
+#
+# These are injected into the parser prompts below (no hard-coded list in the
+# template text), so the values the LLM is allowed to emit can never silently
+# drift from this list. The frontend's `frontend/lib/constants.ts` mirrors these
+# (it drives the review dropdowns) — keep the two in sync; see the note there.
+# ===========================================================================
+EXPENSE_CATEGORIES = [
+    "Food",
+    "Transport",
+    "Shopping",
+    "Entertainment",
+    "Health",
+    "Bills",
+    "Other",
+]
+
+INCOME_SOURCES = ["Salary", "Transfer", "Interest", "Other"]
+
+
+def _format_options(options: list[str]) -> str:
+    """Render an option list as the "[A, B, C]" text the prompts embed."""
+    return "[" + ", ".join(options) + "]"
+
+
+_PARSER_TEMPLATE = """
 You are a financial transaction parser for a Malaysian personal finance app.
 
 First, determine if the user message describes an EXPENSE or INCOME.
@@ -86,14 +113,14 @@ Extract ALL transactions and return ONLY a JSON array.
 For EXPENSE items, each object must have:
 - type: "expense"
 - amount: a number (no currency symbols)
-- category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
+- category: one of {expense_categories}
 - description: a short description string, or null if unclear
 - date: in YYYY-MM-DD format
 
 For INCOME items, each object must have:
 - type: "income"
 - amount: a number (no currency symbols)
-- source: one of [Salary, Transfer, Interest, Other]
+- source: one of {income_sources}
 - description: a short description string, or null if unclear
 - date: in YYYY-MM-DD format
 
@@ -106,6 +133,14 @@ Rules:
 
 User message: {user_input}
 """
+
+# Inject the canonical lists once, at import. This leaves only {today} and
+# {user_input} as live PromptTemplate variables.
+PARSER_TEMPLATE = (
+    _PARSER_TEMPLATE
+    .replace("{expense_categories}", _format_options(EXPENSE_CATEGORIES))
+    .replace("{income_sources}", _format_options(INCOME_SOURCES))
+)
 
 def _content_to_text(content) -> str:
     """Normalize an LLM response's content into a plain string.
@@ -173,7 +208,7 @@ def parse_transaction(user_input: str) -> list[dict]:
             "Could not parse your message. Try rephrasing, e.g. 'Spent RM50 on groceries'."
         ) from e
 
-PDF_PARSER_TEMPLATE = """
+_PDF_PARSER_TEMPLATE = """
 You are a financial statement parser for a Malaysian personal finance app.
 
 You will be given a Malaysian bank statement PDF (e.g. Maybank, CIMB, Public Bank,
@@ -188,14 +223,14 @@ For each transaction:
 Each EXPENSE object must have:
 - type: "expense"
 - amount: a positive number (no currency symbols, no commas)
-- category: one of [Food, Transport, Shopping, Entertainment, Health, Bills, Other]
+- category: one of {expense_categories}
 - description: a short description (the merchant or narration), or null if unclear
 - date: in YYYY-MM-DD format
 
 Each INCOME object must have:
 - type: "income"
 - amount: a positive number (no currency symbols, no commas)
-- source: one of [Salary, Transfer, Interest, Other]
+- source: one of {income_sources}
 - description: a short description (the payer or narration), or null if unclear
 - date: in YYYY-MM-DD format
 
@@ -210,6 +245,15 @@ Rules:
 - If no date can be determined for a row, use today's date: {today}
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 """
+
+# Inject the canonical lists once, at import. This leaves only {today} as a live
+# .format() field (filled in parse_pdf_transactions below).
+PDF_PARSER_TEMPLATE = (
+    _PDF_PARSER_TEMPLATE
+    .replace("{expense_categories}", _format_options(EXPENSE_CATEGORIES))
+    .replace("{income_sources}", _format_options(INCOME_SOURCES))
+)
+
 
 def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
     pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
