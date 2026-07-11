@@ -57,6 +57,16 @@ function makeRow(data: ITransaction): EditableRow {
   return { id: `row-${rowIdCounter++}`, data };
 }
 
+/** True when an amount is a saveable value: a positive, finite number. A cleared
+ *  <input type=number> yields 0 (Number("") === 0), so this also flags blank
+ *  amounts. The backend enforces the SAME rule (TransactionRequest.amount is
+ *  Field(gt=0)); it validates the whole array atomically, so one bad row 422s the
+ *  entire batch. Catching it here turns that opaque failure into a friendly,
+ *  row-level nudge before we ever call the API. */
+function isValidAmount(amount: number): boolean {
+  return Number.isFinite(amount) && amount > 0;
+}
+
 export default function TransactionPreview({ initialRows, onSaved }: Props) {
   // Local editable copy of the rows, each tagged with a stable id. All edits stay
   // here until "Confirm & Save". Lazy initializer so ids are assigned once, when
@@ -64,6 +74,13 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
   const [rows, setRows] = useState<EditableRow[]>(() => initialRows.map(makeRow));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  // Rows whose amount can't be saved (<= 0 or blank). Derived live from `rows` so
+  // the inline highlight and the Save guard can never disagree, and so a flagged
+  // row clears itself the moment its amount is fixed.
+  const invalidIds = new Set(
+    rows.filter((row) => !isValidAmount(row.data.amount)).map((row) => row.id),
+  );
 
   /** Immutably update ONE field of the row with the given id. */
   function updateRow(id: string, field: keyof ITransaction, value: string | number) {
@@ -87,6 +104,20 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
   /** Send every row to the backend's bulk-save endpoint. */
   async function handleSave() {
     if (saving || rows.length === 0) return;
+
+    // Guard: a single amount <= 0 makes FastAPI reject the WHOLE array with a
+    // generic 422 (nothing saves, no clue which row). Stop here and point at the
+    // offending row(s) — the amounts are already highlighted in the table — so the
+    // user can fix them and save the rest.
+    if (invalidIds.size > 0) {
+      const n = invalidIds.size;
+      setMessage(
+        `⚠️ ${n} row${n > 1 ? "s have" : " has"} an amount of 0 or less. ` +
+          `Fix the highlighted amount${n > 1 ? "s" : ""} (must be greater than 0), then save.`,
+      );
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     try {
@@ -172,15 +203,23 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                     ))}
                   </select>
                 </td>
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <input
                     type="number"
                     step="0.01"
-                    className="w-24 rounded border px-2 py-1"
+                    className={`w-24 rounded border px-2 py-1 ${
+                      invalidIds.has(id)
+                        ? "border-red-500 bg-red-50 text-red-700"
+                        : ""
+                    }`}
                     value={data.amount}
                     // <input type=number> still yields a string; coerce to a real number.
                     onChange={(e) => updateRow(id, "amount", Number(e.target.value))}
+                    aria-invalid={invalidIds.has(id)}
                   />
+                  {invalidIds.has(id) && (
+                    <p className="mt-1 text-xs text-red-600">Must be &gt; 0</p>
+                  )}
                 </td>
                 <td className="p-2 text-center text-gray-500">{data.count ?? 1}</td>
                 <td className="p-1">
