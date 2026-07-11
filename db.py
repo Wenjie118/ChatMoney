@@ -247,6 +247,11 @@ def save_multiple_transactions(transactions: list) -> dict:
                 failed += 1
                 continue
             saved += 1
+        except DatabaseConnectionError:
+            # Supabase is unreachable — this is a total outage, not a bad row.
+            # Propagate so the route returns a 503 ("database is down") instead of
+            # silently counting every row as a per-row failure and returning 200.
+            raise
         except Exception:
             failed += 1
     return {"total": len(transactions), "saved": saved, "failed": failed}
