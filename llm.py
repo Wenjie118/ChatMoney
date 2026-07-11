@@ -86,10 +86,15 @@ EXPENSE_CATEGORIES = [
     "Entertainment",
     "Health",
     "Bills",
+    "Transfer",
     "Other",
 ]
 
 INCOME_SOURCES = ["Salary", "Transfer", "Interest", "Other"]
+
+# "Transfer" labels a move between the user's OWN accounts — not real spending
+# or earning. Both legs (expense + income) net to zero in Balance / Net Savings.
+TRANSFER = "Transfer"
 
 
 def _format_options(options: list[str]) -> str:
@@ -458,6 +463,10 @@ def get_spending_analysis(month: int | None = None, year: int | None = None) -> 
     category_totals: dict[str, float] = {}
     for e in expenses:
         cat = e["category"]
+        if cat == TRANSFER:
+            # Internal account move, not real spending — keep it out of
+            # total_so_far, the per-category breakdown, and the projection.
+            continue
         category_totals[cat] = category_totals.get(cat, 0.0) + e["amount"]
 
     #    round each category total to 2 dp (money).

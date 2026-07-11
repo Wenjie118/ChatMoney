@@ -17,6 +17,7 @@ export const EXPENSE_CATEGORIES = [
   "Entertainment",
   "Health",
   "Bills",
+  "Transfer", // internal account move; pairs with the "Transfer" income source
   "Other",
 ] as const;
 
