@@ -344,6 +344,30 @@ Situation rules:
 - current_balance is an estimate based on manual_balance plus transactions since last_updated — present it as an estimate, not a guaranteed figure
 """
 
+# Above this many expense rows in a month, send the advisor a compact
+# per-category breakdown instead of every individual row. The advice reasons over
+# category totals and the summary, not line items, so this keeps quality while
+# cutting prompt tokens (cost/latency, and context-limit risk) on busy months.
+ADVISOR_MAX_EXPENSE_ROWS = 40
+
+
+def _aggregate_expenses_by_category(expenses: list[dict]) -> dict:
+    """Collapse expense rows into {category: {total, count}} for the advisor prompt.
+
+    Preserves the real category names and RM amounts the advice must reference,
+    without shipping every individual transaction.
+    """
+    by_category: dict[str, dict] = {}
+    for e in expenses:
+        cat = e.get("category") or "Other"
+        entry = by_category.setdefault(cat, {"total": 0.0, "count": 0})
+        entry["total"] += e.get("amount", 0)
+        entry["count"] += 1
+    for entry in by_category.values():
+        entry["total"] = round(entry["total"], 2)
+    return by_category
+
+
 def get_advice(month: int | None = None, year: int | None = None) -> str:
     today = date.today()
     month = month or today.month
@@ -359,7 +383,17 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
     summary["current_balance"] = balance["current_balance"]
     period = date(year, month, 1).strftime("%B %Y")
 
-    expenses_json = json.dumps(expenses, indent=2)
+    # For busy months, aggregate expenses per category to keep the prompt compact;
+    # small months send the full row list unchanged (identical to before).
+    if len(expenses) > ADVISOR_MAX_EXPENSE_ROWS:
+        expenses_payload: object = {
+            "note": "aggregated per-category totals (many transactions this month)",
+            "expense_count": len(expenses),
+            "by_category": _aggregate_expenses_by_category(expenses),
+        }
+    else:
+        expenses_payload = expenses
+    expenses_json = json.dumps(expenses_payload, indent=2)
     income_json = json.dumps(income, indent=2)
     summary_json = json.dumps(summary, indent=2)
     balance_json = json.dumps(balance, indent=2)
