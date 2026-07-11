@@ -32,6 +32,7 @@ from db import (
     save_multiple_transactions,
     get_expenses,
     get_income,
+    summarize_transactions,
 )
 from utils.transactions import consolidate_transactions
 from schemas.models import (
@@ -269,27 +270,17 @@ def summary(month: int, year: int) -> SummaryResponse:
     """Return the four headline numbers for ONE month (income, expenses, savings, rate).
 
     `month` and `year` are REQUIRED query params here (no default) because the
-    dashboard always knows which month it's showing. db.get_monthly_summary() does
-    the same math but is hard-wired to the current month — we replicate it for any
-    month using get_expenses/get_income.
+    dashboard always knows which month it's showing. db.get_monthly_summary() is
+    hard-wired to the current month, but both share db.summarize_transactions()
+    for the actual math — this route just fetches any month's rows and feeds them
+    in (the divide-by-zero guard lives in that helper).
 
     A Supabase outage raises DatabaseConnectionError -> 503 (global handler).
     """
     expenses = get_expenses(month=month, year=year)
     income = get_income(month=month, year=year)
 
-    total_income = sum(i["amount"] for i in income)
-    total_expenses = sum(e["amount"] for e in expenses)
-    net_savings = total_income - total_expenses
-    # Guard against divide-by-zero when there's no income yet.
-    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
-
-    return SummaryResponse(
-        total_income=total_income,
-        total_expenses=total_expenses,
-        net_savings=net_savings,
-        savings_rate=savings_rate,
-    )
+    return SummaryResponse(**summarize_transactions(income, expenses))
 
 
 @router.post("/save-multiple", response_model=SaveMultipleResponse)

@@ -11,7 +11,13 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage
 from google.genai.errors import APIError
 
-from db import get_expenses, get_expenses_until_today, get_income, get_balance
+from db import (
+    get_expenses,
+    get_expenses_until_today,
+    get_income,
+    get_balance,
+    summarize_transactions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,18 +353,10 @@ def get_advice(month: int | None = None, year: int | None = None) -> str:
     income = get_income(month=month, year=year)
     balance = get_balance()
 
-    total_income = sum(i["amount"] for i in income)
-    total_expenses = sum(e["amount"] for e in expenses)
-    net_savings = total_income - total_expenses
-    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
-
-    summary = {
-        "total_income": total_income,
-        "total_expenses": total_expenses,
-        "net_savings": net_savings,
-        "savings_rate": savings_rate,
-        "current_balance": balance["current_balance"],
-    }
+    # Shared math (same helper the DB summary and /transactions/summary use), plus
+    # the current-balance estimate the advisor prompt also references.
+    summary = summarize_transactions(income, expenses)
+    summary["current_balance"] = balance["current_balance"]
     period = date(year, month, 1).strftime("%B %Y")
 
     expenses_json = json.dumps(expenses, indent=2)

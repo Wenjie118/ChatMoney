@@ -153,31 +153,38 @@ def get_income(month, year):
     response = client.table("income").select("*").gte("date", start).lte("date", end).execute()
     return response.data
 
+def summarize_transactions(income: list[dict], expenses: list[dict]) -> dict:
+    """Compute the headline monthly figures from a month's income + expense rows.
+
+    THE single source of truth for the {total_income, total_expenses,
+    net_savings, savings_rate} math shared by get_monthly_summary, the
+    /transactions/summary route, and llm.get_advice. The divide-by-zero guard
+    (savings_rate = 0.0 when there is no income) lives here, in one place.
+
+    `current_balance` is intentionally NOT included — it comes from get_balance()
+    and is added by the callers that need it.
+    """
+    total_income = sum(i["amount"] for i in income)
+    total_expenses = sum(e["amount"] for e in expenses)
+    net_savings = total_income - total_expenses
+    savings_rate = (net_savings / total_income * 100) if total_income > 0 else 0.0
+    return {
+        "total_income": total_income,
+        "total_expenses": total_expenses,
+        "net_savings": net_savings,
+        "savings_rate": savings_rate,
+    }
+
+
 @with_db_connection
 def get_monthly_summary():
     current = date.today()
 
-    details = {
-        "total_income":    0.0,
-        "total_expenses":  0.0,
-        "net_savings":     0.0,
-        "savings_rate":    0.0,
-        "current_balance": 0.0
-    }
-
     incomes = get_income(current.month, current.year)
-    for income in incomes:
-        details["total_income"] += income["amount"]
-
     expenses = get_expenses(current.month, current.year)
-    for expense in expenses:
-        details["total_expenses"] += expense["amount"]
 
-    details["net_savings"] = details["total_income"] - details["total_expenses"]
-    details["savings_rate"] = (details["net_savings"] / details["total_income"]) * 100 if details["total_income"] > 0 else 0.0
-
-    balance = get_balance()
-    details["current_balance"] = balance["current_balance"]
+    details = summarize_transactions(incomes, expenses)
+    details["current_balance"] = get_balance()["current_balance"]
 
     return details
 
