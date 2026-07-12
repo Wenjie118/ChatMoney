@@ -236,6 +236,14 @@ def save_multiple_transactions(transactions: list) -> dict:
     failed = 0
     for t in transactions:
         try:
+            # Reject rows with no category/source (e.g. a manual row where the
+            # dropdown was never picked). Saving these produces uncategorized
+            # transactions that break the per-category dashboard breakdown, so we
+            # skip and count them as failed rather than writing bad data.
+            label = t.get("category") or t.get("source")
+            if not label or not str(label).strip():
+                failed += 1
+                continue
             if t["type"] == "income":
                 save_income(
                     amount=t["amount"],

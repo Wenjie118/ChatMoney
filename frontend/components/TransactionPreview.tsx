@@ -26,14 +26,22 @@ import { saveMultiple } from "@/lib/api";
 import { optionsForType } from "@/lib/constants";
 
 interface Props {
-  /** Consolidated rows returned by api.parsePDF(). */
+  /** Rows to seed the table: consolidated rows from api.parsePDF(), or a single
+   *  blankRow() for manual entry. */
   initialRows: ITransaction[];
   /** Optional callback after a successful save (e.g. to clear the preview). */
   onSaved?: (result: { total: number; saved: number; failed: number }) => void;
+  /** Heading text; the live row count is appended. Default: PDF-review wording. */
+  title?: string;
+  /** Help line under the heading. Default: PDF-review wording that explains Count. */
+  helpText?: string;
+  /** Show the read-only Count column (a PDF-merge artifact). Default true; pass
+   *  false for manual entry, where merge counts are meaningless. */
+  showCount?: boolean;
 }
 
-/** A fresh, empty row for the "Add row" button. */
-function blankRow(): ITransaction {
+/** A fresh, empty row for the "Add row" button and for seeding manual entry. */
+export function blankRow(): ITransaction {
   return {
     type: "expense",
     amount: 0,
@@ -67,7 +75,22 @@ function isValidAmount(amount: number): boolean {
   return Number.isFinite(amount) && amount > 0;
 }
 
-export default function TransactionPreview({ initialRows, onSaved }: Props) {
+/** True when a category/source has actually been picked. A blank manual row (and
+ *  the <select>'s placeholder) is an empty string, which would save an
+ *  uncategorized transaction and break the per-category dashboard breakdown. The
+ *  backend also skips such rows (db.save_multiple_transactions); catching it here
+ *  turns that into a friendly, row-level nudge before we call the API. */
+function hasCategory(row: ITransaction): boolean {
+  return typeof row.category_or_source === "string" && row.category_or_source.trim() !== "";
+}
+
+export default function TransactionPreview({
+  initialRows,
+  onSaved,
+  title = "✏️ Review & edit",
+  helpText,
+  showCount = true,
+}: Props) {
   // Local editable copy of the rows, each tagged with a stable id. All edits stay
   // here until "Confirm & Save". Lazy initializer so ids are assigned once, when
   // the rows first load (the parent remounts us via `key` for a new PDF).
@@ -80,6 +103,12 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
   // row clears itself the moment its amount is fixed.
   const invalidIds = new Set(
     rows.filter((row) => !isValidAmount(row.data.amount)).map((row) => row.id),
+  );
+
+  // Rows with no category/source picked. Same live-derivation idea as invalidIds
+  // so the red highlight and the Save guard stay in lock-step.
+  const missingCategoryIds = new Set(
+    rows.filter((row) => !hasCategory(row.data)).map((row) => row.id),
   );
 
   /** Immutably update ONE field of the row with the given id. */
@@ -118,6 +147,18 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
       return;
     }
 
+    // Guard: an empty category/source saves an uncategorized transaction (the
+    // reported bug). Block and point at the highlighted row(s) so the user picks
+    // one first.
+    if (missingCategoryIds.size > 0) {
+      const n = missingCategoryIds.size;
+      setMessage(
+        `⚠️ ${n} row${n > 1 ? "s are" : " is"} missing a category/source. ` +
+          `Pick one for each highlighted row, then save.`,
+      );
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     try {
@@ -134,10 +175,16 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
 
   return (
     <div className="space-y-3">
-      <h3 className="font-semibold">✏️ Review &amp; edit ({rows.length} rows)</h3>
+      <h3 className="font-semibold">
+        {title} ({rows.length} rows)
+      </h3>
       <p className="text-sm text-gray-500">
-        Edit any cell, delete a row, or add new ones. <b>Count</b> shows how many
-        statement lines were merged. Nothing is saved until you confirm.
+        {helpText ?? (
+          <>
+            Edit any cell, delete a row, or add new ones. <b>Count</b> shows how
+            many statement lines were merged. Nothing is saved until you confirm.
+          </>
+        )}
       </p>
 
       <div className="overflow-x-auto rounded-xl border border-gray-200">
@@ -149,7 +196,7 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
               <th className="p-2">Description</th>
               <th className="p-2">Category/Source</th>
               <th className="p-2">Amount</th>
-              <th className="p-2">Count</th>
+              {showCount && <th className="p-2">Count</th>}
               <th className="p-2"></th>
             </tr>
           </thead>
@@ -158,7 +205,8 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
               <tr key={id} className="border-t">
                 <td className="p-1">
                   <input
-                    className="w-28 rounded border px-2 py-1"
+                    type="date"
+                    className="w-36 rounded border px-2 py-1"
                     value={data.date}
                     onChange={(e) => updateRow(id, "date", e.target.value)}
                   />
@@ -180,12 +228,22 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                     onChange={(e) => updateRow(id, "description", e.target.value)}
                   />
                 </td>
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <select
-                    className="w-36 rounded border px-2 py-1"
+                    className={`w-36 rounded border px-2 py-1 ${
+                      missingCategoryIds.has(id)
+                        ? "border-red-500 bg-red-50 text-red-700"
+                        : ""
+                    }`}
                     value={data.category_or_source ?? ""}
                     onChange={(e) => updateRow(id, "category_or_source", e.target.value)}
+                    aria-invalid={missingCategoryIds.has(id)}
                   >
+                    {/* Placeholder so an unpicked category shows as blank rather than
+                        misleadingly displaying the first option while the value is "". */}
+                    <option value="" disabled>
+                      — Select —
+                    </option>
                     {/* Options come from the canonical lists in lib/constants.ts,
                         switched by row type (expense=categories, income=sources). */}
                     {/* Safety: if the parsed value isn't a known option (rare),
@@ -202,6 +260,9 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                       </option>
                     ))}
                   </select>
+                  {missingCategoryIds.has(id) && (
+                    <p className="mt-1 text-xs text-red-600">Pick one</p>
+                  )}
                 </td>
                 <td className="p-1 align-top">
                   <input
@@ -221,7 +282,9 @@ export default function TransactionPreview({ initialRows, onSaved }: Props) {
                     <p className="mt-1 text-xs text-red-600">Must be &gt; 0</p>
                   )}
                 </td>
-                <td className="p-2 text-center text-gray-500">{data.count ?? 1}</td>
+                {showCount && (
+                  <td className="p-2 text-center text-gray-500">{data.count ?? 1}</td>
+                )}
                 <td className="p-1">
                   <button
                     className="rounded px-2 py-1 text-red-600 hover:bg-red-50"

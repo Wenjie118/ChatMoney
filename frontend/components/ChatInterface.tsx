@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { parseTransaction, parsePDF } from "@/lib/api";
 import type { ITransaction } from "@/lib/types";
-import TransactionPreview from "./TransactionPreview";
+import TransactionPreview, { blankRow } from "./TransactionPreview";
 import { useBusy } from "@/lib/busy";
 
 interface Message {
@@ -35,8 +35,17 @@ export default function ChatInterface() {
 
   // PDF import (Slice 4): the parsed rows awaiting review.
   const [pdfRows, setPdfRows] = useState<ITransaction[] | null>(null);
+  // Manual entry: rows for the editable table when adding transactions by hand
+  // (no PDF, no LLM). `null` = the table is closed. Reuses TransactionPreview and
+  // the same /transactions/save-multiple endpoint as the PDF flow.
+  const [manualRows, setManualRows] = useState<ITransaction[] | null>(null);
   // Global busy overlay — freezes the WHOLE app while the PDF is being parsed.
   const { setBusy } = useBusy();
+
+  /** Open the manual-entry table (seeded with one blank row) or close it. */
+  function toggleManual() {
+    setManualRows((prev) => (prev ? null : [blankRow()]));
+  }
 
   /** Runs when the user picks a PDF file. Parses it, then shows the preview table. */
   async function handlePdf(e: React.ChangeEvent<HTMLInputElement>) {
@@ -161,6 +170,44 @@ export default function ChatInterface() {
             key={pdfRows.length + "-" + (pdfRows[0]?.date ?? "")}
             initialRows={pdfRows}
             onSaved={() => setPdfRows(null)}
+          />
+        )}
+      </div>
+
+      {/* Manual entry: add transactions straight into the editable table — no PDF,
+          no LLM. Same table + same save endpoint as the PDF flow. */}
+      <div className="space-y-3 rounded-2xl border border-dashed border-gray-300 bg-white p-5">
+        <div className="flex items-center justify-between gap-2">
+          <label className="block text-sm font-medium text-gray-700">
+            ✏️ Or add transactions manually
+          </label>
+          <button
+            className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium transition hover:bg-gray-50"
+            onClick={toggleManual}
+          >
+            {manualRows ? "Close" : "➕ Add transactions manually"}
+          </button>
+        </div>
+
+        {/* Mount/unmount gives a fresh blank row each time it's opened. On save we
+            drop a confirmation into the chat (the table's own message unmounts with
+            it) and close the table. */}
+        {manualRows && (
+          <TransactionPreview
+            initialRows={manualRows}
+            showCount={false}
+            title="✏️ Enter transactions"
+            helpText="Add a row for each transaction, edit the cells, then save. No file needed."
+            onSaved={(result) => {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  role: "assistant",
+                  content: `✅ Saved ${result.saved} of ${result.total} transactions.`,
+                },
+              ]);
+              setManualRows(null);
+            }}
           />
         )}
       </div>
