@@ -99,4 +99,38 @@ describe("TransactionPreview", () => {
     expect(mockedSave).not.toHaveBeenCalled();
     expect(screen.getByText(/amount of 0 or less/)).toBeInTheDocument();
   });
+
+  it("blocks save when a row has no category/source and does not call the API", async () => {
+    const user = userEvent.setup();
+    const rows = initialRows();
+    rows[0].category_or_source = ""; // nothing picked in the dropdown
+    render(<TransactionPreview initialRows={rows} />);
+
+    await user.click(screen.getByRole("button", { name: /Confirm & Save/ }));
+
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/missing a category\/source/)).toBeInTheDocument();
+  });
+
+  it("shows the Count column by default (PDF flow)", () => {
+    render(<TransactionPreview initialRows={initialRows()} />);
+    expect(screen.getByRole("columnheader", { name: "Count" })).toBeInTheDocument();
+  });
+
+  it("hides the Count column when showCount is false (manual entry)", () => {
+    render(<TransactionPreview initialRows={initialRows()} showCount={false} />);
+    expect(screen.queryByRole("columnheader", { name: "Count" })).not.toBeInTheDocument();
+  });
+
+  it("uses a custom title and help text when provided", () => {
+    render(
+      <TransactionPreview
+        initialRows={initialRows()}
+        title="✏️ Enter transactions"
+        helpText="Add a row for each transaction, edit the cells, then save."
+      />,
+    );
+    expect(screen.getByText(/Enter transactions \(2 rows\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Add a row for each transaction/)).toBeInTheDocument();
+  });
 });
