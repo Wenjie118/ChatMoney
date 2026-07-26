@@ -51,7 +51,7 @@ from fastapi.responses import JSONResponse
 
 from db import DatabaseConnectionError
 from utils.cors import configure_cors
-from routes import balance, transactions, advisor
+from routes import balance, transactions, advisor, wallets, transfers
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -138,6 +138,8 @@ async def handle_value_error(request: Request, exc: ValueError):
 app.include_router(balance.router, prefix="/balance", tags=["balance"])
 app.include_router(transactions.router, prefix="/transactions", tags=["transactions"])
 app.include_router(advisor.router, prefix="/advisor", tags=["advisor"])
+app.include_router(wallets.router, prefix="/wallets", tags=["wallets"])
+app.include_router(transfers.router, prefix="/transfers", tags=["transfers"])
 
 
 @app.get("/health")

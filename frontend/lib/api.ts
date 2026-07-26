@@ -19,6 +19,10 @@ import type {
   ISaveMultipleResult,
   IMonthlySummary,
   IPeriod,
+  IWallet,
+  ILedgerEntry,
+  IUnassigned,
+  ITransfer,
 } from "./types";
 
 // Base URL of the FastAPI backend, from frontend/.env.local.
@@ -84,9 +88,16 @@ export async function getBalance(): Promise<IBalance> {
  * the saved transactions.
  * @throws Error on network failure or a non-2xx status (e.g. 422 unparseable text).
  */
-export async function parseTransaction(text: string): Promise<ITransaction[]> {
-  // body must match ParseTextRequest { text }
-  return request<ITransaction[]>("/transactions/parse", jsonBody("POST", { text }));
+export async function parseTransaction(
+  text: string,
+  walletId?: number | null,
+): Promise<ITransaction[]> {
+  // body must match ParseTextRequest { text, wallet_id? }. wallet_id tags every
+  // transaction parsed from this message (the chat UI requires picking one).
+  return request<ITransaction[]>(
+    "/transactions/parse",
+    jsonBody("POST", { text, wallet_id: walletId ?? null }),
+  );
 }
 
 /**
@@ -169,4 +180,70 @@ export async function getSpendingAnalysis(
  */
 export async function getPeriods(): Promise<IPeriod[]> {
   return request<IPeriod[]>("/advisor/periods", { method: "GET", cache: "no-store" });
+}
+
+// ===========================================================================
+// Wallets — virtual sub-wallets with computed, ledger-based balances.
+// ===========================================================================
+
+/** GET /wallets — active wallets with their computed balances. */
+export async function getWallets(): Promise<IWallet[]> {
+  return request<IWallet[]>("/wallets", { method: "GET", cache: "no-store" });
+}
+
+/** POST /wallets — create a wallet (starts at balance 0). */
+export async function createWallet(name: string): Promise<IWallet> {
+  return request<IWallet>("/wallets", jsonBody("POST", { name }));
+}
+
+/** PATCH /wallets/{id} — rename; returns it with its current balance. */
+export async function renameWallet(id: number, name: string): Promise<IWallet> {
+  return request<IWallet>(`/wallets/${id}`, jsonBody("PATCH", { name }));
+}
+
+/** DELETE /wallets/{id} — soft-delete (money folds into Unassigned). */
+export async function deleteWallet(id: number): Promise<{ status: string; id: number }> {
+  return request(`/wallets/${id}`, { method: "DELETE" });
+}
+
+/** GET /wallets/{id}/ledger — the wallet's movement history. */
+export async function getWalletLedger(id: number): Promise<ILedgerEntry[]> {
+  return request<ILedgerEntry[]>(`/wallets/${id}/ledger`, { method: "GET", cache: "no-store" });
+}
+
+/** GET /wallets/unassigned — total (incl. baseline) + resolvable rows. */
+export async function getUnassigned(): Promise<IUnassigned> {
+  return request<IUnassigned>("/wallets/unassigned", { method: "GET", cache: "no-store" });
+}
+
+/** POST /transfers — move money between two wallets (both required). */
+export async function createTransfer(
+  fromWallet: number,
+  toWallet: number,
+  amount: number,
+  description?: string | null,
+  date?: string | null,
+): Promise<ITransfer> {
+  return request<ITransfer>(
+    "/transfers",
+    jsonBody("POST", {
+      from_wallet: fromWallet,
+      to_wallet: toWallet,
+      amount,
+      description: description ?? null,
+      date: date ?? null,
+    }),
+  );
+}
+
+/** PATCH /transactions/{id}/wallet?type= — resolve an Unassigned income/expense. */
+export async function resolveTransactionWallet(
+  id: number,
+  type: "expense" | "income",
+  walletId: number | null,
+): Promise<{ status: string }> {
+  return request(
+    `/transactions/${id}/wallet?type=${type}`,
+    jsonBody("PATCH", { wallet_id: walletId }),
+  );
 }

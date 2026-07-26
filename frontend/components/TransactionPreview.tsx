@@ -21,7 +21,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ITransaction } from "@/lib/types";
+import type { ITransaction, IWallet } from "@/lib/types";
 import { saveMultiple } from "@/lib/api";
 import { optionsForType } from "@/lib/constants";
 
@@ -38,16 +38,22 @@ interface Props {
   /** Show the read-only Count column (a PDF-merge artifact). Default true; pass
    *  false for manual entry, where merge counts are meaningless. */
   showCount?: boolean;
+  /** Active wallets. When provided (length > 0), a per-row Wallet dropdown is
+   *  shown and a wallet is COMPULSORY on every row — Save is blocked until each
+   *  row (including PDF-imported ones) has a wallet picked. Omit/empty = no wallet
+   *  column (e.g. the user has no wallets yet). */
+  wallets?: IWallet[];
 }
 
 /** A fresh, empty row for the "Add row" button and for seeding manual entry. */
 export function blankRow(): ITransaction {
   return {
     type: "expense",
-    amount: 0,
+    amount: NaN, // empty until the user types — renders as a blank box, not a stuck "0"
     category_or_source: "",
     description: "",
     date: new Date().toISOString().slice(0, 10), // today as "YYYY-MM-DD"
+    wallet_id: null,
   };
 }
 
@@ -65,12 +71,12 @@ function makeRow(data: ITransaction): EditableRow {
   return { id: `row-${rowIdCounter++}`, data };
 }
 
-/** True when an amount is a saveable value: a positive, finite number. A cleared
- *  <input type=number> yields 0 (Number("") === 0), so this also flags blank
- *  amounts. The backend enforces the SAME rule (TransactionRequest.amount is
- *  Field(gt=0)); it validates the whole array atomically, so one bad row 422s the
- *  entire batch. Catching it here turns that opaque failure into a friendly,
- *  row-level nudge before we ever call the API. */
+/** True when an amount is a saveable value: a positive, finite number. A blank
+ *  amount field is stored as NaN (see the amount <input> onChange), which isn't
+ *  finite, so this also flags empty amounts. The backend enforces the SAME rule
+ *  (TransactionRequest.amount is Field(gt=0)); it validates the whole array
+ *  atomically, so one bad row 422s the entire batch. Catching it here turns that
+ *  opaque failure into a friendly, row-level nudge before we ever call the API. */
 function isValidAmount(amount: number): boolean {
   return Number.isFinite(amount) && amount > 0;
 }
@@ -90,7 +96,10 @@ export default function TransactionPreview({
   title = "✏️ Review & edit",
   helpText,
   showCount = true,
+  wallets,
 }: Props) {
+  // Only show the wallet column when there are wallets to tag against.
+  const showWallets = (wallets?.length ?? 0) > 0;
   // Local editable copy of the rows, each tagged with a stable id. All edits stay
   // here until "Confirm & Save". Lazy initializer so ids are assigned once, when
   // the rows first load (the parent remounts us via `key` for a new PDF).
@@ -111,12 +120,30 @@ export default function TransactionPreview({
     rows.filter((row) => !hasCategory(row.data)).map((row) => row.id),
   );
 
+  // Rows with no wallet picked. A wallet is COMPULSORY on every expense/income
+  // (product rule), enforced whenever there are wallets to choose from — same
+  // live-derived, lock-step pattern as the category guard above.
+  const missingWalletIds = new Set(
+    showWallets
+      ? rows.filter((row) => row.data.wallet_id == null).map((row) => row.id)
+      : [],
+  );
+
   /** Immutably update ONE field of the row with the given id. */
   function updateRow(id: string, field: keyof ITransaction, value: string | number) {
     setRows((prev) =>
       prev.map((row) =>
         row.id === id ? { ...row, data: { ...row.data, [field]: value } } : row,
       ),
+    );
+  }
+
+  /** Set a row's wallet from the dropdown ("" = Unassigned/null). Separate from
+   *  updateRow because wallet_id is a number|null, not a string|number. */
+  function updateWallet(id: string, value: string) {
+    const wid = value === "" ? null : Number(value);
+    setRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, data: { ...row.data, wallet_id: wid } } : row)),
     );
   }
 
@@ -159,6 +186,17 @@ export default function TransactionPreview({
       return;
     }
 
+    // Guard: a wallet is compulsory on every row (when wallets exist). Block and
+    // point at the highlighted row(s) so the user assigns one before saving.
+    if (missingWalletIds.size > 0) {
+      const n = missingWalletIds.size;
+      setMessage(
+        `⚠️ ${n} row${n > 1 ? "s are" : " is"} missing a wallet. ` +
+          `Pick a wallet for each highlighted row, then save.`,
+      );
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     try {
@@ -195,6 +233,7 @@ export default function TransactionPreview({
               <th className="p-2">Type</th>
               <th className="p-2">Description</th>
               <th className="p-2">Category/Source</th>
+              {showWallets && <th className="p-2">Wallet</th>}
               <th className="p-2">Amount</th>
               {showCount && <th className="p-2">Count</th>}
               <th className="p-2"></th>
@@ -203,7 +242,7 @@ export default function TransactionPreview({
           <tbody>
             {rows.map(({ id, data }) => (
               <tr key={id} className="border-t">
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <input
                     type="date"
                     className="w-36 rounded border px-2 py-1"
@@ -211,7 +250,7 @@ export default function TransactionPreview({
                     onChange={(e) => updateRow(id, "date", e.target.value)}
                   />
                 </td>
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <select
                     className="rounded border px-2 py-1"
                     value={data.type}
@@ -221,7 +260,7 @@ export default function TransactionPreview({
                     <option value="income">income</option>
                   </select>
                 </td>
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <input
                     className="w-full rounded border px-2 py-1"
                     value={data.description ?? ""}
@@ -264,6 +303,32 @@ export default function TransactionPreview({
                     <p className="mt-1 text-xs text-red-600">Pick one</p>
                   )}
                 </td>
+                {showWallets && (
+                  <td className="p-1 align-top">
+                    <select
+                      className={`w-32 rounded border px-2 py-1 ${
+                        missingWalletIds.has(id) ? "border-red-500 bg-red-50 text-red-700" : ""
+                      }`}
+                      value={data.wallet_id ?? ""}
+                      onChange={(e) => updateWallet(id, e.target.value)}
+                      aria-invalid={missingWalletIds.has(id)}
+                    >
+                      {/* Wallet is compulsory — a disabled placeholder means an
+                          unpicked wallet shows blank and can't be re-selected. */}
+                      <option value="" disabled>
+                        — Select —
+                      </option>
+                      {wallets!.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </select>
+                    {missingWalletIds.has(id) && (
+                      <p className="mt-1 text-xs text-red-600">Pick one</p>
+                    )}
+                  </td>
+                )}
                 <td className="p-1 align-top">
                   <input
                     type="number"
@@ -273,9 +338,13 @@ export default function TransactionPreview({
                         ? "border-red-500 bg-red-50 text-red-700"
                         : ""
                     }`}
-                    value={data.amount}
-                    // <input type=number> still yields a string; coerce to a real number.
-                    onChange={(e) => updateRow(id, "amount", Number(e.target.value))}
+                    // A blank box shows as empty (NaN), not "0", so the user can
+                    // clear it and type freely instead of fighting a stuck leading 0.
+                    value={Number.isNaN(data.amount) ? "" : data.amount}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      updateRow(id, "amount", raw === "" ? NaN : Number(raw));
+                    }}
                     aria-invalid={invalidIds.has(id)}
                   />
                   {invalidIds.has(id) && (
@@ -283,9 +352,9 @@ export default function TransactionPreview({
                   )}
                 </td>
                 {showCount && (
-                  <td className="p-2 text-center text-gray-500">{data.count ?? 1}</td>
+                  <td className="p-2 text-center align-top text-gray-500">{data.count ?? 1}</td>
                 )}
-                <td className="p-1">
+                <td className="p-1 align-top">
                   <button
                     className="rounded px-2 py-1 text-red-600 hover:bg-red-50"
                     onClick={() => deleteRow(id)}

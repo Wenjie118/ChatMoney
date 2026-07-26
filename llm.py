@@ -219,6 +219,27 @@ def parse_transaction(user_input: str) -> list[dict]:
             "Could not parse your message. Try rephrasing, e.g. 'Spent RM50 on groceries'."
         ) from e
 
+def _format_wallets_for_prompt(wallets) -> str:
+    """Wallet-matching context for the PDF parser prompt.
+
+    `wallets` is the list of active wallet dicts (each with a 'name'). Returns a
+    block naming them so the model can tag each transaction, or a clear
+    'no wallets' instruction. The golden rule — never guess — is stated here and
+    reinforced in the object spec + rules: a wrong wallet is worse than a blank one
+    because a blank is visible in "Unassigned" and a wrong one is not.
+    """
+    names = [w["name"] for w in (wallets or []) if w.get("name")]
+    if not names:
+        return 'WALLETS: the user has no wallets set up — always set "wallet" to null.'
+    joined = ", ".join(f'"{n}"' for n in names)
+    return (
+        "WALLETS: the user's active wallets are: " + joined + ".\n"
+        'For each transaction set "wallet" to the EXACT name of the wallet it '
+        "belongs to, inferred from the description. If you are not confident which "
+        'wallet it is, set "wallet" to null — NEVER guess a wallet.'
+    )
+
+
 _PDF_PARSER_TEMPLATE = """
 You are a financial statement parser for a Malaysian personal finance app.
 
@@ -231,12 +252,15 @@ For each transaction:
   INCOME (money in / credit / deposit / salary / transfer received).
 - Infer the category or source from the merchant name or description.
 
+{wallets}
+
 Each EXPENSE object must have:
 - type: "expense"
 - amount: a positive number (no currency symbols, no commas)
 - category: one of {expense_categories}
 - description: a short description (the merchant or narration), or null if unclear
 - date: in YYYY-MM-DD format
+- wallet: an EXACT wallet name from the WALLETS list above, or null (see rules)
 
 Each INCOME object must have:
 - type: "income"
@@ -244,6 +268,7 @@ Each INCOME object must have:
 - source: one of {income_sources}
 - description: a short description (the payer or narration), or null if unclear
 - date: in YYYY-MM-DD format
+- wallet: an EXACT wallet name from the WALLETS list above, or null (see rules)
 
 Rules:
 - Extract ALL transactions you can find, in order.
@@ -254,6 +279,8 @@ Rules:
   If a transaction's year is missing, infer it from the statement period.
 - Ignore non-transaction lines (opening/closing balances, totals, headers, footers).
 - If no date can be determined for a row, use today's date: {today}
+- "wallet" MUST be either an exact name from the WALLETS list or null. When unsure,
+  use null — never guess a wallet.
 - Return ONLY a valid JSON array. No markdown, no code blocks, no explanation.
 """
 
@@ -266,11 +293,16 @@ PDF_PARSER_TEMPLATE = (
 )
 
 
-def parse_pdf_transactions(pdf_bytes: bytes) -> list[dict]:
+def parse_pdf_transactions(pdf_bytes: bytes, wallets=None) -> list[dict]:
     pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
+    prompt_text = PDF_PARSER_TEMPLATE.format(
+        today=date.today().isoformat(),
+        wallets=_format_wallets_for_prompt(wallets),
+    )
+
     message = HumanMessage(content=[
-        {"type": "text", "text": PDF_PARSER_TEMPLATE.format(today=date.today().isoformat())},
+        {"type": "text", "text": prompt_text},
         {
             "type": "file",
             "source_type": "base64",

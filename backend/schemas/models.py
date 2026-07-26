@@ -42,6 +42,10 @@ class ParseTextRequest(BaseModel):
     a separate model keeps each endpoint's contract clear.)
     """
     text: str
+    # Wallet the logged transaction(s) belong to. The chat UI requires it before
+    # sending; the API keeps it optional so a null just lands the row in Unassigned
+    # (the invariant handles that) rather than hard-failing the request.
+    wallet_id: int | None = None
 
 
 class TransactionResponse(BaseModel):
@@ -60,6 +64,9 @@ class TransactionResponse(BaseModel):
     # Optional + default None so the text-parse and /recent endpoints — which
     # never merge anything — can omit it. It's only populated by /parse-pdf.
     count: int | None = None
+    # Wallet this transaction is tagged to (null = Unassigned). On /parse-pdf this
+    # is the parser's inferred wallet mapped name->id; on /recent it's the stored tag.
+    wallet_id: int | None = None
 
 
 # ===========================================================================
@@ -81,6 +88,9 @@ class TransactionRequest(BaseModel):
     # The preview rows carry a merge count; we accept it so the JSON validates,
     # even though save-multiple ignores it (it only writes amount/category/etc.).
     count: int | None = None
+    # Chosen wallet for this row (null = Unassigned). Persisted into the row's
+    # wallet_id by save_multiple_transactions.
+    wallet_id: int | None = None
 
 
 class SaveMultipleResponse(BaseModel):
@@ -123,4 +133,83 @@ class SpendingAnalysisResponse(BaseModel):
     optional month/year). Named `analysis` (not `advice`) to keep the two
     advisors' contracts distinct. Mirror this in frontend/lib/types.ts."""
     analysis: str
+
+
+# ===========================================================================
+# Wallets — virtual sub-wallets with computed, ledger-based balances.
+# Mirror these in frontend/lib/types.ts (IWallet / ITransfer / ...).
+# ===========================================================================
+class WalletCreate(BaseModel):
+    """Body for POST /wallets."""
+    name: str = Field(min_length=1)
+
+
+class WalletRename(BaseModel):
+    """Body for PATCH /wallets/{id}."""
+    name: str = Field(min_length=1)
+
+
+class WalletResponse(BaseModel):
+    """A wallet with its COMPUTED balance (never stored)."""
+    id: int
+    name: str
+    balance: float
+
+
+class LedgerEntry(BaseModel):
+    """One movement in a wallet's ledger (GET /wallets/{id}/ledger)."""
+    date: str
+    kind: str                          # income | expense | transfer_in | transfer_out
+    description: str | None = None
+    amount: float
+    signed_amount: float               # + into the wallet, − out of it
+
+
+class UnassignedRow(BaseModel):
+    """A NULL-wallet income/expense row the user can resolve."""
+    id: int
+    type: str                          # "expense" | "income"
+    amount: float
+    category_or_source: str | None = None
+    description: str | None = None
+    date: str
+
+
+class UnassignedResponse(BaseModel):
+    """GET /wallets/unassigned — the total (incl. pre-wallet baseline) plus the
+    resolvable rows. The baseline is part of `total` but is not a row."""
+    total: float
+    rows: list[UnassignedRow]
+
+
+class TransferCreate(BaseModel):
+    """Body for POST /transfers. BOTH wallets are REQUIRED on this manual path —
+    the required int fields make FastAPI reject a missing side with a 422."""
+    from_wallet: int
+    to_wallet: int
+    amount: float = Field(gt=0)
+    description: str | None = None
+    date: str | None = None            # defaults to today in db.create_transfer
+
+
+class TransferResponse(BaseModel):
+    """A stored transfer row."""
+    id: int
+    from_wallet: int | None = None
+    to_wallet: int | None = None
+    amount: float
+    description: str | None = None
+    date: str
+
+
+class TransferPatch(BaseModel):
+    """Body for PATCH /transfers/{id} — fill in previously-NULL wallet sides."""
+    from_wallet: int | None = None
+    to_wallet: int | None = None
+
+
+class ResolveWalletRequest(BaseModel):
+    """Body for PATCH /transactions/{id}/wallet — assign (or null out) a wallet on
+    a previously-unassigned income/expense row."""
+    wallet_id: int | None = None
 

@@ -22,6 +22,9 @@ export interface ITransaction {
    *  Optional `?` because text-parse and /recent rows never set it. Mirrors the
    *  optional `count` on the backend TransactionResponse. */
   count?: number | null;
+  /** Wallet this transaction is tagged to (null = Unassigned). Optional because
+   *  older callers/rows don't set it. Mirrors TransactionResponse.wallet_id. */
+  wallet_id?: number | null;
 }
 
 /** Mirrors backend BalanceResponse / db.get_balance(). */
@@ -73,4 +76,53 @@ export interface IMonthlySummary {
   net_savings: number;
   /** percentage, e.g. 23.5 means 23.5% */
   savings_rate: number;
+}
+
+// ===========================================================================
+// Wallets — virtual sub-wallets with computed, ledger-based balances.
+// Mirror backend WalletResponse / TransferResponse / etc.
+// ===========================================================================
+
+/** A wallet with its COMPUTED balance (GET /wallets). */
+export interface IWallet {
+  id: number;
+  name: string;
+  balance: number;
+}
+
+/** One movement in a wallet's ledger (GET /wallets/{id}/ledger). */
+export interface ILedgerEntry {
+  date: string;
+  /** income | expense | transfer_in | transfer_out */
+  kind: string;
+  description: string | null;
+  amount: number;
+  /** + into the wallet, − out of it */
+  signed_amount: number;
+}
+
+/** A NULL-wallet income/expense row the user can resolve. */
+export interface IUnassignedRow {
+  id: number;
+  type: "expense" | "income";
+  amount: number;
+  category_or_source: string | null;
+  description: string | null;
+  date: string;
+}
+
+/** GET /wallets/unassigned — total (incl. pre-wallet baseline) + resolvable rows. */
+export interface IUnassigned {
+  total: number;
+  rows: IUnassignedRow[];
+}
+
+/** A stored transfer row (POST /transfers). */
+export interface ITransfer {
+  id: number;
+  from_wallet: number | null;
+  to_wallet: number | null;
+  amount: number;
+  description: string | null;
+  date: string;
 }

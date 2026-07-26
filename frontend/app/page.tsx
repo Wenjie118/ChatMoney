@@ -11,14 +11,16 @@ import { useState } from "react";
 import ChatInterface from "@/components/ChatInterface";
 import Dashboard from "@/components/Dashboard";
 import Advisor from "@/components/Advisor";
+import Wallets from "@/components/Wallets";
 import { BusyProvider } from "@/lib/busy";
 
-type View = "chat" | "dashboard" | "advisor";
+type View = "chat" | "dashboard" | "wallets" | "advisor";
 
 /** The navigation items, shared by the desktop sidebar and the mobile drawer. */
 const NAV: { id: View; label: string; icon: string; subtitle: string }[] = [
   { id: "chat", label: "Chat", icon: "💬", subtitle: "Log expenses & import statements" },
   { id: "dashboard", label: "Dashboard", icon: "📊", subtitle: "Your monthly overview" },
+  { id: "wallets", label: "Wallets", icon: "👛", subtitle: "Organize money into wallets" },
   { id: "advisor", label: "Advisor", icon: "🤖", subtitle: "AI-powered financial advice" },
 ];
 
@@ -101,6 +103,7 @@ export default function Home() {
         <main className="mx-auto w-full max-w-5xl flex-1 p-4 md:p-8">
           {view === "chat" && <ChatInterface />}
           {view === "dashboard" && <Dashboard />}
+          {view === "wallets" && <Wallets />}
           {view === "advisor" && <Advisor />}
         </main>
       </div>
