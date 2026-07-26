@@ -40,6 +40,7 @@ def test_parse_happy_path_saves_and_returns_flattened_rows():
     assert body[0] == {
         "type": "expense", "amount": 50.0, "category_or_source": "Food",
         "description": "coffee", "date": "2026-07-01", "count": None,
+        "wallet_id": None,
     }
     assert body[1]["type"] == "income"
     assert body[1]["category_or_source"] == "Salary"
@@ -76,7 +77,8 @@ def test_parse_pdf_happy_path_consolidates_rows():
         {"type": "expense", "amount": 10, "category": "Food", "description": "Lunch", "date": "2026-07-01"},
         {"type": "expense", "amount": 12, "category": "Food", "description": "Lunch", "date": "2026-07-03"},
     ]
-    with patch("routes.transactions.parse_pdf_transactions", return_value=parsed):
+    with patch("routes.transactions.parse_pdf_transactions", return_value=parsed), \
+         patch("routes.transactions.get_wallets", return_value=[]):
         res = client.post("/transactions/parse-pdf", files=_pdf_upload())
 
     assert res.status_code == 200
@@ -86,6 +88,7 @@ def test_parse_pdf_happy_path_consolidates_rows():
     assert body[0]["amount"] == 22
     assert body[0]["count"] == 2
     assert body[0]["category_or_source"] == "Food"
+    assert body[0]["wallet_id"] is None  # no wallets -> Unassigned
 
 
 def test_parse_pdf_non_pdf_upload_returns_422_without_llm_call():
@@ -96,7 +99,8 @@ def test_parse_pdf_non_pdf_upload_returns_422_without_llm_call():
 
 
 def test_parse_pdf_unreadable_returns_422():
-    with patch("routes.transactions.parse_pdf_transactions", side_effect=ValueError("Could not read transactions")):
+    with patch("routes.transactions.parse_pdf_transactions", side_effect=ValueError("Could not read transactions")), \
+         patch("routes.transactions.get_wallets", return_value=[]):
         res = client.post("/transactions/parse-pdf", files=_pdf_upload())
     assert res.status_code == 422
     assert "Could not read" in res.json()["detail"]

@@ -42,7 +42,10 @@ def consolidate_transactions(transactions: list[dict]) -> list[dict]:
         # The LLM uses `category` for expenses and `source` for income; collapse
         # both into one value so similar rows group together regardless of type key.
         cat_or_src = t.get("category") or t.get("source")
-        key = (t.get("type"), t.get("description"), cat_or_src)
+        # The inferred wallet NAME (or None) is part of the key so rows the parser
+        # tagged to different wallets never merge into one — otherwise a tag is lost.
+        wallet = t.get("wallet")
+        key = (t.get("type"), t.get("description"), cat_or_src, wallet)
         d = t.get("date")
 
         if key in grouped:
@@ -61,6 +64,8 @@ def consolidate_transactions(transactions: list[dict]) -> list[dict]:
                 "description": t.get("description"),
                 "date": d,
                 "count": 1,
+                # Parser-inferred wallet NAME (or None); the route maps it to an id.
+                "wallet": wallet,
             }
 
     return list(grouped.values())

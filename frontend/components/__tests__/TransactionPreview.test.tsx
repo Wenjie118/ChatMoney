@@ -122,6 +122,45 @@ describe("TransactionPreview", () => {
     expect(screen.queryByRole("columnheader", { name: "Count" })).not.toBeInTheDocument();
   });
 
+  it("shows no Wallet column when no wallets are provided", () => {
+    render(<TransactionPreview initialRows={initialRows()} />);
+    expect(screen.queryByRole("columnheader", { name: "Wallet" })).not.toBeInTheDocument();
+  });
+
+  it("shows a Wallet column and saves the chosen wallet_id when wallets are provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionPreview
+        initialRows={initialRows()}
+        wallets={[{ id: 7, name: "Daily", balance: 0 }]}
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: "Wallet" })).toBeInTheDocument();
+
+    // Comboboxes per row are type, category, wallet — the wallet selects for the
+    // two rows are indices 2 and 5. A wallet is compulsory, so BOTH must be set.
+    const combos = screen.getAllByRole("combobox");
+    await user.selectOptions(combos[2], "7");
+    await user.selectOptions(combos[5], "7");
+    await user.click(screen.getByRole("button", { name: /Confirm & Save/ }));
+
+    expect(mockedSave.mock.calls[0][0][0].wallet_id).toBe(7);
+  });
+
+  it("blocks save when a row has no wallet and wallets exist", async () => {
+    const user = userEvent.setup();
+    render(
+      <TransactionPreview
+        initialRows={initialRows()}
+        wallets={[{ id: 7, name: "Daily", balance: 0 }]}
+      />,
+    );
+    // Neither row has a wallet picked -> Save is blocked, API not called.
+    await user.click(screen.getByRole("button", { name: /Confirm & Save/ }));
+    expect(mockedSave).not.toHaveBeenCalled();
+    expect(screen.getByText(/missing a wallet/)).toBeInTheDocument();
+  });
+
   it("uses a custom title and help text when provided", () => {
     render(
       <TransactionPreview

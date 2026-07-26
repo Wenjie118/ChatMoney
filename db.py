@@ -76,7 +76,7 @@ def get_supabase():
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @with_db_connection
-def save_expense(amount, category, expense_date, desc=None):
+def save_expense(amount, category, expense_date, desc=None, wallet_id=None):
     client = get_supabase()
     expense = {
         "amount": amount,
@@ -84,6 +84,10 @@ def save_expense(amount, category, expense_date, desc=None):
         "description": desc,
         "date": expense_date
     }
+    # Optional wallet tag. Only included when set so untagged saves keep working
+    # even before the wallets migration adds the column (income has one too).
+    if wallet_id is not None:
+        expense["wallet_id"] = wallet_id
     response = client.table("expenses").insert(expense).execute()
     return response
 
@@ -134,7 +138,7 @@ def get_expenses_until_today(month, year):
 
 
 @with_db_connection
-def save_income(amount, source, income_date, desc=None):
+def save_income(amount, source, income_date, desc=None, wallet_id=None):
     client = get_supabase()
     income = {
         "amount": amount,
@@ -142,6 +146,10 @@ def save_income(amount, source, income_date, desc=None):
         "description": desc,
         "date": income_date
     }
+    # Optional wallet tag (see save_expense). Omitted when None so pre-migration
+    # untagged saves still succeed.
+    if wallet_id is not None:
+        income["wallet_id"] = wallet_id
     response = client.table("income").insert(income).execute()
     return response
 
@@ -250,6 +258,7 @@ def save_multiple_transactions(transactions: list) -> dict:
                     source=t.get("source") or t.get("category"),
                     income_date=t["date"],
                     desc=t.get("description"),
+                    wallet_id=t.get("wallet_id"),
                 )
             elif t["type"] == "expense":
                 save_expense(
@@ -257,6 +266,7 @@ def save_multiple_transactions(transactions: list) -> dict:
                     category=t.get("category") or t.get("source"),
                     expense_date=t["date"],
                     desc=t.get("description"),
+                    wallet_id=t.get("wallet_id"),
                 )
             else:
                 failed += 1
@@ -290,3 +300,271 @@ def get_logged_periods():
                 continue
             periods.add((d.year, d.month))
     return sorted(periods, reverse=True)
+
+
+# ===========================================================================
+# Wallets — virtual sub-wallets with COMPUTED, ledger-based balances.
+#
+# A wallet's balance is never stored; it is summed on read from its movements:
+#   tagged income (+), transfer in (+), transfer out (−), tagged expense (−).
+#
+# THE INVARIANT (correctness gate):
+#     Σ(active wallet balances) + unassigned == current_balance
+# All three are computed over the SAME horizon as get_balance() — movements with
+# created_at strictly after the latest balance row — with manual_balance as the
+# Unassigned baseline. Money tagged to a NULL wallet OR a soft-deleted (inactive)
+# wallet counts toward Unassigned, so the invariant holds even after a delete.
+#
+# The aggregation is split into pure, network-free helpers (_compute_*) so the
+# invariant can be unit-tested without touching Supabase.
+# ===========================================================================
+
+# ---- Wallet CRUD (Layer 1) ------------------------------------------------
+
+@with_db_connection
+def create_wallet(name: str):
+    """Create an active wallet. Returns the new row."""
+    client = get_supabase()
+    return client.table("wallets").insert({"name": name, "is_active": True}).execute().data[0]
+
+
+@with_db_connection
+def get_wallets(active_only: bool = True):
+    """List wallets, oldest first. active_only hides soft-deleted ones."""
+    client = get_supabase()
+    query = client.table("wallets").select("*")
+    if active_only:
+        query = query.eq("is_active", True)
+    return query.order("id").execute().data
+
+
+@with_db_connection
+def rename_wallet(wallet_id: int, name: str):
+    """Rename a wallet."""
+    client = get_supabase()
+    return client.table("wallets").update({"name": name}).eq("id", wallet_id).execute()
+
+
+@with_db_connection
+def deactivate_wallet(wallet_id: int):
+    """Soft-delete a wallet (is_active = false). Never hard-delete — its ledger
+    rows stay valid and its money folds into Unassigned."""
+    client = get_supabase()
+    return client.table("wallets").update({"is_active": False}).eq("id", wallet_id).execute()
+
+
+# ---- Balance horizon + fetch helpers --------------------------------------
+
+def _latest_balance_anchor(client):
+    """(manual_balance, created_at) of the latest balance row, or (0.0, None)
+    when none exists. Mirrors get_balance()'s anchoring so wallet math shares the
+    exact same horizon."""
+    resp = client.table("balance").select("*").order("created_at", desc=True).limit(1).execute()
+    if not resp.data:
+        return 0.0, None
+    row = resp.data[0]
+    return row["manual_balance"], row["created_at"]
+
+
+def _post_anchor_movements(client, anchor):
+    """Fetch (income, expenses, transfers) with created_at strictly after the
+    anchor — the same filter get_balance() uses. Empty when there is no anchor
+    (get_balance returns 0 in that degenerate case, so wallets do too).
+
+    Batched: one query per table (no per-wallet N+1)."""
+    if anchor is None:
+        return [], [], []
+    income = client.table("income").select("*").gt("created_at", anchor).execute().data
+    expenses = client.table("expenses").select("*").gt("created_at", anchor).execute().data
+    transfers = client.table("wallet_transfers").select("*").gt("created_at", anchor).execute().data
+    return income, expenses, transfers
+
+
+# ---- Pure aggregation (unit-testable, no network) -------------------------
+
+def _compute_wallet_balances(active_ids, income, expenses, transfers):
+    """{wallet_id: balance} for the given active wallet ids, from the supplied
+    (already horizon-filtered) movement rows. Movements tagged to a wallet_id NOT
+    in active_ids are ignored here — they belong to Unassigned."""
+    active = set(active_ids)
+    balances = {wid: 0.0 for wid in active}
+    for i in income:
+        w = i.get("wallet_id")
+        if w in balances:
+            balances[w] += i["amount"]
+    for e in expenses:
+        w = e.get("wallet_id")
+        if w in balances:
+            balances[w] -= e["amount"]
+    for t in transfers:
+        tw, fw = t.get("to_wallet"), t.get("from_wallet")
+        if tw in balances:
+            balances[tw] += t["amount"]
+        if fw in balances:
+            balances[fw] -= t["amount"]
+    return balances
+
+
+def _compute_unassigned(manual_balance, active_ids, income, expenses, transfers):
+    """Unassigned total = manual_balance baseline + every movement NOT tied to an
+    active wallet (NULL wallet or a soft-deleted one). Transfer sides touching a
+    non-active wallet net in/out of Unassigned. Complementary to
+    _compute_wallet_balances, so together they partition all money exactly once."""
+    active = set(active_ids)
+    total = float(manual_balance or 0.0)
+    total += sum(i["amount"] for i in income if i.get("wallet_id") not in active)
+    total -= sum(e["amount"] for e in expenses if e.get("wallet_id") not in active)
+    total += sum(t["amount"] for t in transfers if t.get("to_wallet") not in active)
+    total -= sum(t["amount"] for t in transfers if t.get("from_wallet") not in active)
+    return total
+
+
+# ---- Public balance reads (Layer 1) ---------------------------------------
+
+@with_db_connection
+def get_all_wallet_balances():
+    """[{id, name, balance}] for every ACTIVE wallet, batched (no N+1)."""
+    client = get_supabase()
+    wallets = client.table("wallets").select("*").eq("is_active", True).order("id").execute().data
+    active_ids = [w["id"] for w in wallets]
+    _, anchor = _latest_balance_anchor(client)
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    balances = _compute_wallet_balances(active_ids, income, expenses, transfers)
+    return [
+        {"id": w["id"], "name": w["name"], "balance": balances.get(w["id"], 0.0)}
+        for w in wallets
+    ]
+
+
+@with_db_connection
+def get_wallet_balance(wallet_id: int):
+    """Computed balance of a single wallet (works for inactive wallets too, for
+    the ledger detail view). No date filtering beyond the shared balance anchor."""
+    client = get_supabase()
+    _, anchor = _latest_balance_anchor(client)
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    return _compute_wallet_balances([wallet_id], income, expenses, transfers)[wallet_id]
+
+
+@with_db_connection
+def get_unassigned_total():
+    """Total money not held in any active wallet (baseline + NULL/inactive-tagged
+    movements). Part of the invariant: Σ(active balances) + this == current_balance."""
+    client = get_supabase()
+    manual_balance, anchor = _latest_balance_anchor(client)
+    active_ids = [w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data]
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    return _compute_unassigned(manual_balance, active_ids, income, expenses, transfers)
+
+
+@with_db_connection
+def get_unassigned_rows():
+    """The NULL-wallet (or inactive-wallet) income/expense rows a user can resolve
+    by assigning a wallet. The manual_balance baseline is intentionally NOT a row —
+    it is not a resolvable transaction. Newest first."""
+    client = get_supabase()
+    _, anchor = _latest_balance_anchor(client)
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    active = set(w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data)
+
+    rows = []
+    for i in income:
+        if i.get("wallet_id") not in active:
+            rows.append({
+                "id": i["id"], "type": "income", "amount": i["amount"],
+                "category_or_source": i.get("source"),
+                "description": i.get("description"), "date": i["date"],
+            })
+    for e in expenses:
+        if e.get("wallet_id") not in active:
+            rows.append({
+                "id": e["id"], "type": "expense", "amount": e["amount"],
+                "category_or_source": e.get("category"),
+                "description": e.get("description"), "date": e["date"],
+            })
+    rows.sort(key=lambda r: str(r["date"]), reverse=True)
+    return rows
+
+
+# ---- Transfers, tagging resolution & ledger (Layer 2) ---------------------
+
+@with_db_connection
+def create_transfer(from_wallet, to_wallet, amount, description=None, transfer_date=None):
+    """Record a wallet-to-wallet transfer. amount must be > 0 and the two wallets
+    must differ. NULL wallet sides are permitted at this layer only for future PDF
+    import; the API enforces both-required on the manual path."""
+    if amount is None or amount <= 0:
+        raise ValueError("Transfer amount must be greater than 0.")
+    if from_wallet is not None and to_wallet is not None and from_wallet == to_wallet:
+        raise ValueError("A transfer must be between two different wallets.")
+    client = get_supabase()
+    row = {
+        "from_wallet": from_wallet,
+        "to_wallet": to_wallet,
+        "amount": amount,
+        "description": description,
+        "date": transfer_date or date.today().isoformat(),
+    }
+    return client.table("wallet_transfers").insert(row).execute().data[0]
+
+
+@with_db_connection
+def update_transfer_wallets(transfer_id: int, from_wallet, to_wallet):
+    """Fill in previously-NULL wallet sides of an imported transfer."""
+    if from_wallet is not None and to_wallet is not None and from_wallet == to_wallet:
+        raise ValueError("A transfer must be between two different wallets.")
+    client = get_supabase()
+    return (
+        client.table("wallet_transfers")
+        .update({"from_wallet": from_wallet, "to_wallet": to_wallet})
+        .eq("id", transfer_id)
+        .execute()
+    )
+
+
+@with_db_connection
+def update_expense_wallet(expense_id: int, wallet_id):
+    """Resolve a NULL-wallet expense by tagging it to a wallet (or back to NULL)."""
+    client = get_supabase()
+    return client.table("expenses").update({"wallet_id": wallet_id}).eq("id", expense_id).execute()
+
+
+@with_db_connection
+def update_income_wallet(income_id: int, wallet_id):
+    """Resolve a NULL-wallet income by tagging it to a wallet (or back to NULL)."""
+    client = get_supabase()
+    return client.table("income").update({"wallet_id": wallet_id}).eq("id", income_id).execute()
+
+
+@with_db_connection
+def get_wallet_ledger(wallet_id: int):
+    """Chronological movements affecting a wallet (post-anchor, so the ledger sums
+    to the wallet's balance). Each row: {date, kind, description, amount,
+    signed_amount}. kind ∈ income | expense | transfer_in | transfer_out."""
+    client = get_supabase()
+    _, anchor = _latest_balance_anchor(client)
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
+
+    entries = []
+    for i in income:
+        if i.get("wallet_id") == wallet_id:
+            entries.append({"date": i["date"], "kind": "income",
+                            "description": i.get("description"),
+                            "amount": i["amount"], "signed_amount": i["amount"]})
+    for e in expenses:
+        if e.get("wallet_id") == wallet_id:
+            entries.append({"date": e["date"], "kind": "expense",
+                            "description": e.get("description"),
+                            "amount": e["amount"], "signed_amount": -e["amount"]})
+    for t in transfers:
+        if t.get("to_wallet") == wallet_id:
+            entries.append({"date": t["date"], "kind": "transfer_in",
+                            "description": t.get("description"),
+                            "amount": t["amount"], "signed_amount": t["amount"]})
+        if t.get("from_wallet") == wallet_id:
+            entries.append({"date": t["date"], "kind": "transfer_out",
+                            "description": t.get("description"),
+                            "amount": t["amount"], "signed_amount": -t["amount"]})
+
+    entries.sort(key=lambda x: str(x["date"]))
+    return entries

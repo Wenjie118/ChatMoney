@@ -14,12 +14,14 @@ import userEvent from "@testing-library/user-event";
 import ChatInterface from "@/components/ChatInterface";
 import { saveMultiple } from "@/lib/api";
 
-// Mock the whole API client: ChatInterface uses parse*, TransactionPreview uses
-// saveMultiple. Only saveMultiple is exercised here.
+// Mock the whole API client: ChatInterface uses parse* + getWallets (on mount),
+// TransactionPreview uses saveMultiple. Only saveMultiple is exercised here;
+// getWallets resolves to [] so the manual-entry table has no wallet column.
 vi.mock("@/lib/api", () => ({
   parseTransaction: vi.fn(),
   parsePDF: vi.fn(),
   saveMultiple: vi.fn(),
+  getWallets: vi.fn(() => Promise.resolve([])),
 }));
 const mockedSave = vi.mocked(saveMultiple);
 
@@ -49,7 +51,7 @@ describe("ChatInterface — manual entry", () => {
 
     await user.click(screen.getByRole("button", { name: /Add transactions manually/ }));
 
-    // A fresh row starts with amount 0 and no category — set both before saving,
+    // A fresh row starts with an empty amount and no category — set both before saving,
     // else the amount / category guards block it. The category <select> is the
     // second combobox (the first is the expense/income type).
     fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "50" } });

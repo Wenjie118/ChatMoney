@@ -33,6 +33,9 @@ from db import (
     get_expenses,
     get_income,
     summarize_transactions,
+    get_wallets,
+    update_expense_wallet,
+    update_income_wallet,
 )
 from utils.transactions import consolidate_transactions
 from schemas.models import (
@@ -41,6 +44,7 @@ from schemas.models import (
     TransactionResponse,
     SaveMultipleResponse,
     SummaryResponse,
+    ResolveWalletRequest,
 )
 
 router = APIRouter()
@@ -164,6 +168,7 @@ def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
                 source=row["category_or_source"],
                 income_date=row["date"],
                 desc=row["description"],
+                wallet_id=payload.wallet_id,
             )
         else:  # expense
             save_expense(
@@ -171,6 +176,7 @@ def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
                 category=row["category_or_source"],
                 expense_date=row["date"],
                 desc=row["description"],
+                wallet_id=payload.wallet_id,
             )
 
         saved.append(TransactionResponse(
@@ -179,6 +185,7 @@ def parse_text(payload: ParseTextRequest) -> list[TransactionResponse]:
             category_or_source=row["category_or_source"],
             description=row["description"],
             date=row["date"],
+            wallet_id=payload.wallet_id,
         ))
 
     return saved
@@ -206,16 +213,25 @@ async def parse_pdf(file: UploadFile = File(...)) -> list[TransactionResponse]:
     # user gets a clear message instead of Gemini's cryptic 'no pages' error.
     _validate_pdf(pdf_bytes)
 
-    # Step 2 + 3 — parse with the LLM, then merge duplicates. An unreadable PDF /
-    # nothing parseable / busy AI raises ValueError, mapped to 422 by the global
-    # handler in main.py.
-    parsed = parse_pdf_transactions(pdf_bytes)
+    # Step 1c — active wallets give the parser names to match against, and let us
+    # map the inferred name back to an id. A Supabase outage -> 503 (global handler).
+    wallets = get_wallets()
+
+    # Step 2 + 3 — parse with the LLM (with wallet context), then merge duplicates.
+    # An unreadable PDF / nothing parseable / busy AI raises ValueError -> 422.
+    parsed = parse_pdf_transactions(pdf_bytes, wallets=wallets)
 
     consolidated = consolidate_transactions(parsed)
 
-    # Step 4 — coerce each dict into the typed response. The keys already match
-    # TransactionResponse (type/amount/category_or_source/description/date/count).
-    return [TransactionResponse(**row) for row in consolidated]
+    # Step 4 — map the parser's inferred wallet NAME to an id (case-insensitive;
+    # unknown/absent -> None = Unassigned), then coerce each row into the response.
+    name_to_id = {str(w["name"]).lower(): w["id"] for w in wallets}
+    result: list[TransactionResponse] = []
+    for row in consolidated:
+        wname = row.pop("wallet", None)
+        row["wallet_id"] = name_to_id.get(str(wname).lower()) if wname else None
+        result.append(TransactionResponse(**row))
+    return result
 
 
 @router.get("/recent", response_model=list[TransactionResponse])
@@ -250,6 +266,7 @@ def recent_transactions(
             category_or_source=e.get("category"),
             description=e.get("description"),
             date=e["date"],
+            wallet_id=e.get("wallet_id"),
         ))
     for i in income:
         rows.append(TransactionResponse(
@@ -258,6 +275,7 @@ def recent_transactions(
             category_or_source=i.get("source"),
             description=i.get("description"),
             date=i["date"],
+            wallet_id=i.get("wallet_id"),
         ))
 
     # Newest first. ISO date strings compare correctly as plain strings.
@@ -303,6 +321,8 @@ def save_multiple(payload: list[TransactionRequest]) -> SaveMultipleResponse:
             "source": t.category_or_source,
             "date": t.date,
             "description": t.description,
+            # Chosen wallet for this row (null = Unassigned).
+            "wallet_id": t.wallet_id,
         }
         for t in payload
     ]
@@ -313,3 +333,25 @@ def save_multiple(payload: list[TransactionRequest]) -> SaveMultipleResponse:
 
     # result is {"total": ..., "saved": ..., "failed": ...}
     return SaveMultipleResponse(**result)
+
+
+@router.patch("/{transaction_id}/wallet")
+def resolve_wallet(
+    transaction_id: int,
+    type: str,
+    payload: ResolveWalletRequest,
+) -> dict:
+    """Assign (or null out) the wallet on a previously-unassigned income/expense.
+
+    `type` is a query param ("expense" | "income") selecting which table to
+    update — this is how an Unassigned row is resolved from the UI. Passing
+    wallet_id=null moves it back to Unassigned.
+    """
+    if type == "expense":
+        update_expense_wallet(transaction_id, payload.wallet_id)
+    elif type == "income":
+        update_income_wallet(transaction_id, payload.wallet_id)
+    else:
+        raise HTTPException(status_code=422, detail="type must be 'expense' or 'income'.")
+
+    return {"status": "updated", "id": transaction_id, "type": type, "wallet_id": payload.wallet_id}

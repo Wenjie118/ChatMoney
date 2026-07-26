@@ -9,9 +9,9 @@
  */
 "use client";
 
-import { useState } from "react";
-import { parseTransaction, parsePDF } from "@/lib/api";
-import type { ITransaction } from "@/lib/types";
+import { useEffect, useState } from "react";
+import { parseTransaction, parsePDF, getWallets } from "@/lib/api";
+import type { ITransaction, IWallet } from "@/lib/types";
 import TransactionPreview, { blankRow } from "./TransactionPreview";
 import { useBusy } from "@/lib/busy";
 
@@ -42,6 +42,20 @@ export default function ChatInterface() {
   // Global busy overlay — freezes the WHOLE app while the PDF is being parsed.
   const { setBusy } = useBusy();
 
+  // Wallets drive the required wallet selector (text logging) and the wallet
+  // column in the preview tables. Default to the first wallet to reduce friction.
+  const [wallets, setWallets] = useState<IWallet[]>([]);
+  const [walletId, setWalletId] = useState<number | "">("");
+
+  useEffect(() => {
+    getWallets()
+      .then((ws) => {
+        setWallets(ws);
+        if (ws.length > 0) setWalletId(ws[0].id);
+      })
+      .catch(() => setWallets([]));
+  }, []);
+
   /** Open the manual-entry table (seeded with one blank row) or close it. */
   function toggleManual() {
     setManualRows((prev) => (prev ? null : [blankRow()]));
@@ -71,14 +85,28 @@ export default function ChatInterface() {
     const text = input.trim();
     if (!text || loading) return;
 
+    // A wallet is required for manual logging. Nudge instead of silently sending.
+    if (walletId === "") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: wallets.length
+            ? "⚠️ Pick a wallet first."
+            : "⚠️ Create a wallet in the Wallets tab before logging transactions.",
+        },
+      ]);
+      return;
+    }
+
     // 1. show the user's message immediately and clear the box
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setInput("");
     setLoading(true);
 
-    // 2. call the API, then push an assistant reply (or an error)
+    // 2. call the API (tagging every parsed row to the chosen wallet), then reply
     try {
-      const saved = await parseTransaction(text);
+      const saved = await parseTransaction(text, Number(walletId));
       const reply =
         saved.length > 0
           ? saved.map(formatSaved).join("\n")
@@ -131,9 +159,29 @@ export default function ChatInterface() {
       </div>
 
       {/* input row */}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
+        {/* Wallet selector — required for text logging. Shows a hint when the user
+            has no wallets yet (Send stays disabled until one exists). */}
+        {wallets.length > 0 ? (
+          <select
+            className="rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+            value={walletId}
+            onChange={(e) => setWalletId(e.target.value ? Number(e.target.value) : "")}
+            aria-label="Wallet"
+          >
+            {wallets.map((w) => (
+              <option key={w.id} value={w.id}>
+                👛 {w.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span className="self-center rounded-lg bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+            Create a wallet (Wallets tab) to log transactions
+          </span>
+        )}
         <input
-          className="flex-1 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm shadow-sm outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+          className="min-w-[12rem] flex-1 rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm shadow-sm outline-none transition focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -145,7 +193,7 @@ export default function ChatInterface() {
         <button
           className="rounded-xl brand-gradient px-5 py-2.5 text-sm font-medium text-white shadow-card transition hover:opacity-90 disabled:opacity-50"
           onClick={handleSend}
-          disabled={loading}
+          disabled={loading || wallets.length === 0}
         >
           Send
         </button>
@@ -169,6 +217,7 @@ export default function ChatInterface() {
           <TransactionPreview
             key={pdfRows.length + "-" + (pdfRows[0]?.date ?? "")}
             initialRows={pdfRows}
+            wallets={wallets}
             onSaved={() => setPdfRows(null)}
           />
         )}
@@ -196,6 +245,7 @@ export default function ChatInterface() {
           <TransactionPreview
             initialRows={manualRows}
             showCount={false}
+            wallets={wallets}
             title="✏️ Enter transactions"
             helpText="Add a row for each transaction, edit the cells, then save. No file needed."
             onSaved={(result) => {

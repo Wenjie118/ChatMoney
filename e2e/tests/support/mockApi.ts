@@ -71,6 +71,24 @@ const DEFAULT_ADVICE = {
 
 const DEFAULT_SAVE_RESULT = { total: 2, saved: 2, failed: 0 };
 
+// At least one wallet so the Chat tab's required wallet selector is populated and
+// Send is enabled (it's disabled with zero wallets).
+const DEFAULT_WALLETS = [
+  { id: 1, name: "Daily", balance: 1000.0 },
+  { id: 2, name: "Savings", balance: 4000.0 },
+];
+
+const DEFAULT_UNASSIGNED = { total: 0, rows: [] };
+
+const DEFAULT_TRANSFER = {
+  id: 1,
+  from_wallet: 1,
+  to_wallet: 2,
+  amount: 100.0,
+  description: null,
+  date: "2026-07-20",
+};
+
 // ---------------------------------------------------------------------------
 // Override plumbing.
 // ---------------------------------------------------------------------------
@@ -107,6 +125,16 @@ function defaultFor(method: string, path: string): MockOverride | null {
     return { json: DEFAULT_TRANSACTIONS };
   if (method === "POST" && path.startsWith("/advisor/advice")) return { json: DEFAULT_ADVICE };
   if (method === "GET" && path.startsWith("/advisor/periods")) return { json: DEFAULT_PERIODS };
+
+  // Wallets — specific paths BEFORE the bare "/wallets" list, so subpaths match.
+  if (method === "GET" && path.startsWith("/wallets/unassigned")) return { json: DEFAULT_UNASSIGNED };
+  if (method === "GET" && /^\/wallets\/\d+\/ledger$/.test(path)) return { json: [] };
+  if (method === "GET" && path.startsWith("/wallets")) return { json: DEFAULT_WALLETS };
+  if (method === "POST" && path.startsWith("/wallets")) return { json: { id: 3, name: "New", balance: 0 } };
+  if (method === "PATCH" && /^\/wallets\/\d+$/.test(path)) return { json: { id: 1, name: "Renamed", balance: 0 } };
+  if (method === "DELETE" && /^\/wallets\/\d+$/.test(path)) return { json: { status: "deactivated", id: 1 } };
+  if (method === "POST" && path.startsWith("/transfers")) return { json: DEFAULT_TRANSFER };
+  if (method === "PATCH" && /^\/transactions\/\d+\/wallet$/.test(path)) return { json: { status: "updated" } };
   return null;
 }
 
