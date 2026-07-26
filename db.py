@@ -348,9 +348,41 @@ def rename_wallet(wallet_id: int, name: str):
 @with_db_connection
 def deactivate_wallet(wallet_id: int):
     """Soft-delete a wallet (is_active = false). Never hard-delete — its ledger
-    rows stay valid and its money folds into Unassigned."""
+    rows stay valid and its money folds into Unassigned.
+
+    GUARD: refuses to remove the LAST active wallet. The app is wallet-centric
+    (balance = sum of wallets, entry requires a wallet), so it always keeps at
+    least one to avoid no-wallet error states."""
     client = get_supabase()
+    active = client.table("wallets").select("id").eq("is_active", True).execute().data
+    if len(active) <= 1:
+        raise ValueError("You must keep at least one wallet.")
     return client.table("wallets").update({"is_active": False}).eq("id", wallet_id).execute()
+
+
+@with_db_connection
+def set_wallet_balance(wallet_id: int, target_amount: float):
+    """Correct a wallet to an exact balance by recording an ADJUSTMENT for the
+    delta — income if it needs to go up, expense if down — tagged to the wallet.
+
+    This is the "edit a wallet's balance" action: it means "this wallet should
+    actually hold this much", so it changes the wallet AND the overall balance
+    (which is the sum of wallet balances). Money is not moved between wallets —
+    that is the transfer feature. Balances stay computed/auditable (no stored
+    balance). Returns the delta applied (0.0 when already at target)."""
+    current = get_wallet_balance(wallet_id)
+    delta = round(float(target_amount) - current, 2)
+    if abs(delta) < 0.005:
+        return 0.0
+
+    today = date.today().isoformat()
+    if delta > 0:
+        save_income(amount=delta, source="Other", income_date=today,
+                    desc="Wallet balance adjustment", wallet_id=wallet_id)
+    else:
+        save_expense(amount=-delta, category="Other", expense_date=today,
+                     desc="Wallet balance adjustment", wallet_id=wallet_id)
+    return delta
 
 
 # ---- Balance horizon + fetch helpers --------------------------------------

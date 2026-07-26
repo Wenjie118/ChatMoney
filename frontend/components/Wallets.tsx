@@ -20,6 +20,7 @@ import {
   createWallet,
   renameWallet,
   deleteWallet,
+  setWalletBalance,
   createTransfer,
   getWalletLedger,
   resolveTransactionWallet,
@@ -42,6 +43,9 @@ export default function Wallets() {
   // Inline rename: which wallet id is being edited + its draft name.
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  // Inline "set balance": which wallet id is being corrected + its draft amount.
+  const [balancingId, setBalancingId] = useState<number | null>(null);
+  const [balanceDraft, setBalanceDraft] = useState("");
   // Ledger detail: the wallet whose ledger is open + its rows.
   const [ledgerWallet, setLedgerWallet] = useState<IWallet | null>(null);
   const [ledger, setLedger] = useState<ILedgerEntry[]>([]);
@@ -106,6 +110,22 @@ export default function Wallets() {
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not delete wallet");
+    }
+  }
+
+  /** Correct a wallet to an exact amount (records an adjustment for the delta). */
+  async function handleSetBalance(id: number) {
+    const amount = parseFloat(balanceDraft);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError("Enter a balance of 0 or more.");
+      return;
+    }
+    try {
+      await setWalletBalance(id, amount);
+      setBalancingId(null);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not set balance");
     }
   }
 
@@ -185,6 +205,19 @@ export default function Wallets() {
         </button>
       </div>
 
+      {/* ---- Total across wallets (this is your balance) ---- */}
+      {wallets.length > 0 && (
+        <div className="brand-gradient flex items-center justify-between rounded-2xl p-5 text-white shadow-card">
+          <div>
+            <p className="text-sm font-medium text-white/80">Total across wallets</p>
+            <p className="text-xs text-white/70">Your balance is the sum of your wallets.</p>
+          </div>
+          <p className="text-3xl font-bold tracking-tight">
+            {rm(wallets.reduce((sum, w) => sum + w.balance, 0))}
+          </p>
+        </div>
+      )}
+
       {/* ---- Wallet cards ---- */}
       {wallets.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-gray-300 bg-white p-6 text-center text-sm text-gray-400">
@@ -225,8 +258,10 @@ export default function Wallets() {
                       ✏️
                     </button>
                     <button
-                      className="rounded px-1.5 py-0.5 text-red-600 hover:bg-red-50"
+                      className="rounded px-1.5 py-0.5 text-red-600 hover:bg-red-50 disabled:opacity-30"
                       onClick={() => handleDelete(w)}
+                      disabled={wallets.length <= 1}
+                      title={wallets.length <= 1 ? "Keep at least one wallet" : ""}
                       aria-label={`Delete ${w.name}`}
                     >
                       🗑️
@@ -234,15 +269,51 @@ export default function Wallets() {
                   </div>
                 </div>
               )}
-              <p className={`mt-2 text-2xl font-bold tracking-tight ${w.balance < 0 ? "text-rose-600" : "text-gray-900"}`}>
-                {rm(w.balance)}
-              </p>
-              <button
-                className="mt-2 text-xs font-medium text-violet-600 hover:underline"
-                onClick={() => openLedger(w)}
-              >
-                View ledger →
-              </button>
+
+              {/* Balance — read-only, or the "set balance" (correction) editor. */}
+              {balancingId === w.id ? (
+                <div className="mt-2 flex items-center gap-1">
+                  <span className="text-sm text-gray-500">RM</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="w-28 rounded border border-gray-300 px-2 py-1 text-sm"
+                    value={balanceDraft}
+                    onChange={(e) => setBalanceDraft(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSetBalance(w.id)}
+                    autoFocus
+                  />
+                  <button className="rounded px-2 text-sm text-violet-700" onClick={() => handleSetBalance(w.id)}>
+                    Save
+                  </button>
+                  <button className="rounded px-2 text-sm text-gray-500" onClick={() => setBalancingId(null)}>
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <p className={`mt-2 text-2xl font-bold tracking-tight ${w.balance < 0 ? "text-rose-600" : "text-gray-900"}`}>
+                  {rm(w.balance)}
+                </p>
+              )}
+
+              <div className="mt-2 flex gap-3">
+                <button
+                  className="text-xs font-medium text-violet-600 hover:underline"
+                  onClick={() => {
+                    setBalancingId(w.id);
+                    setBalanceDraft(String(w.balance));
+                  }}
+                >
+                  Set balance
+                </button>
+                <button
+                  className="text-xs font-medium text-violet-600 hover:underline"
+                  onClick={() => openLedger(w)}
+                >
+                  View ledger →
+                </button>
+              </div>
             </div>
           ))}
         </div>

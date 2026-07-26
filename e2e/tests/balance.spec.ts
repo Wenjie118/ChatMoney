@@ -2,10 +2,10 @@ import { test, expect } from "@playwright/test";
 import { mockBackend } from "./support/mockApi";
 
 /**
- * Balance card flow — a fuller example showing how to assert on mocked data and
- * drive a write (PUT /balance). BalanceCard lives inside the Dashboard view
- * (frontend/components/Dashboard.tsx renders <BalanceCard/>), so we open
- * Dashboard first.
+ * Balance card flow — asserts the read-only balance display and its error state.
+ * BalanceCard lives inside the Dashboard view (frontend/components/Dashboard.tsx
+ * renders <BalanceCard/>), so we open Dashboard first. The balance is now managed
+ * via the Wallets tab (this card no longer has an "Update balance" control).
  *
  * UI reference: frontend/components/BalanceCard.tsx.
  */
@@ -27,14 +27,8 @@ test.describe("Balance card", () => {
     await expect(balanceValue).toHaveText("RM 5000.00");
   });
 
-  test("updating the balance reflects the new value", async ({ page }) => {
-    await page.getByRole("button", { name: "Update balance" }).click();
-
-    await page.getByPlaceholder("e.g. 5000").fill("1234.5");
-    await page.getByRole("button", { name: "Save" }).click();
-
-    // The mock echoes the submitted amount back, so the card shows RM 1234.50.
-    await expect(page.getByText("RM 1234.50")).toBeVisible();
+  test("has no balance-editing control (managed via Wallets now)", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Update balance" })).toHaveCount(0);
   });
 
   test("surfaces an error when the balance endpoint fails", async ({ page }) => {

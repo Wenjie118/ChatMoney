@@ -213,3 +213,10 @@ class ResolveWalletRequest(BaseModel):
     a previously-unassigned income/expense row."""
     wallet_id: int | None = None
 
+
+class SetWalletBalanceRequest(BaseModel):
+    """Body for PATCH /wallets/{id}/balance — the exact amount the wallet should
+    hold. The backend records an adjustment for the difference (see
+    db.set_wallet_balance)."""
+    amount: float = Field(ge=0)
+
