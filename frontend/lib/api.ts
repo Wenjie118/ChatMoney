@@ -211,6 +211,12 @@ export async function getWalletLedger(id: number): Promise<ILedgerEntry[]> {
   return request<ILedgerEntry[]>(`/wallets/${id}/ledger`, { method: "GET", cache: "no-store" });
 }
 
+/** PATCH /wallets/{id}/balance — correct a wallet to an exact amount (records an
+ *  adjustment for the difference). Changes the wallet AND the overall balance. */
+export async function setWalletBalance(id: number, amount: number): Promise<IWallet> {
+  return request<IWallet>(`/wallets/${id}/balance`, jsonBody("PATCH", { amount }));
+}
+
 /** GET /wallets/unassigned — total (incl. baseline) + resolvable rows. */
 export async function getUnassigned(): Promise<IUnassigned> {
   return request<IUnassigned>("/wallets/unassigned", { method: "GET", cache: "no-store" });

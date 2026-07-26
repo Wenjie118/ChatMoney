@@ -75,6 +75,34 @@ def test_delete_wallet_soft():
     m.assert_called_once_with(3)
 
 
+def test_delete_last_wallet_returns_422():
+    # db.deactivate_wallet raises ValueError when it's the only active wallet;
+    # the global handler maps that to 422.
+    with patch("routes.wallets.deactivate_wallet",
+               side_effect=ValueError("You must keep at least one wallet.")):
+        res = client.delete("/wallets/1")
+    assert res.status_code == 422
+    assert "at least one wallet" in res.json()["detail"]
+
+
+# ---- PATCH /wallets/{id}/balance (correct to an exact amount) --------------
+def test_set_wallet_balance():
+    with patch("routes.wallets.set_wallet_balance") as m_set, \
+         patch("routes.wallets.get_wallet_balance", return_value=750.0), \
+         patch("routes.wallets.get_wallets", return_value=[{"id": 1, "name": "Daily"}]):
+        res = client.patch("/wallets/1/balance", json={"amount": 750})
+    assert res.status_code == 200
+    assert res.json() == {"id": 1, "name": "Daily", "balance": 750.0}
+    m_set.assert_called_once_with(1, 750.0)
+
+
+def test_set_wallet_balance_rejects_negative():
+    with patch("routes.wallets.set_wallet_balance") as m_set:
+        res = client.patch("/wallets/1/balance", json={"amount": -5})
+    assert res.status_code == 422  # Field(ge=0)
+    m_set.assert_not_called()
+
+
 # ---- GET /wallets/{id}/ledger ---------------------------------------------
 def test_wallet_ledger():
     entries = [{"date": "2026-07-01", "kind": "income", "description": "pay",

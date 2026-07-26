@@ -17,8 +17,10 @@ from fastapi import APIRouter, HTTPException
 
 from db import (
     create_wallet,
+    get_wallets,
     get_all_wallet_balances,
     get_wallet_balance,
+    set_wallet_balance,
     rename_wallet,
     deactivate_wallet,
     get_wallet_ledger,
@@ -33,6 +35,7 @@ from schemas.models import (
     LedgerEntry,
     UnassignedResponse,
     UnassignedRow,
+    SetWalletBalanceRequest,
 )
 
 router = APIRouter()
@@ -92,6 +95,25 @@ def delete(wallet_id: int) -> dict:
     except DatabaseConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"status": "deactivated", "id": wallet_id}
+
+
+@router.patch("/{wallet_id}/balance", response_model=WalletResponse)
+def set_balance(wallet_id: int, payload: SetWalletBalanceRequest) -> WalletResponse:
+    """Correct a wallet to an exact balance (records an adjustment for the delta).
+
+    "This wallet should have this much" — changes the wallet and the overall
+    balance. To move money between wallets, use a transfer instead.
+    """
+    try:
+        set_wallet_balance(wallet_id, payload.amount)
+        balance = get_wallet_balance(wallet_id)
+        wallet = next((w for w in get_wallets(active_only=False) if w["id"] == wallet_id), None)
+    except DatabaseConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if wallet is None:
+        raise HTTPException(status_code=404, detail="Wallet not found.")
+    return WalletResponse(id=wallet_id, name=wallet["name"], balance=balance)
 
 
 @router.get("/{wallet_id}/ledger", response_model=list[LedgerEntry])
