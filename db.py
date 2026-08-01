@@ -1,6 +1,7 @@
 import os
 import socket
 from functools import wraps
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -219,19 +220,18 @@ def get_balance():
     last_updated is the date of the most recent movement (None when there are none).
     """
     client = get_supabase()
-    anchor = _balance_anchor(client)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
     active_ids = _active_wallet_ids(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
 
-    balances = _compute_wallet_balances(active_ids, income, expenses, transfers)
+    balances = _compute_wallet_balances(active_ids, moves)
     wallet_total = sum(balances.values())
-    unassigned = _compute_unassigned(active_ids, income, expenses, transfers)
+    unassigned = _compute_unassigned(active_ids, moves)
 
     return {
         "current_balance": round(wallet_total + unassigned, 2),
         "wallet_total":    round(wallet_total, 2),
         "unassigned":      round(unassigned, 2),
-        "last_updated":    _latest_movement_date(income, expenses, transfers),
+        "last_updated":    _latest_movement_date(moves),
     }
 
 
@@ -302,7 +302,19 @@ def get_logged_periods():
 # Wallets — virtual sub-wallets with COMPUTED, ledger-based balances.
 #
 # A wallet's balance is never stored; it is summed on read from its movements:
-#   tagged income (+), transfer in (+), transfer out (−), tagged expense (−).
+#   tagged income (+), transfer in (+), transfer out (−), tagged expense (−),
+#   adjustment (± its signed amount).
+#
+# THREE KINDS OF MOVEMENT, deliberately kept in separate tables:
+#   • income / expenses      money entering or leaving your life — a BUDGET EVENT,
+#                            so these are the only rows the monthly summary,
+#                            category charts and AI advisor ever read.
+#   • wallet_transfers       money changing wallet; nets to zero system-wide.
+#   • wallet_adjustments     a correction to what a wallet holds ("it should
+#                            actually be RM 500"). Real money, so it moves the
+#                            wallet and the balance — but it is NOT a budget
+#                            event, so it must never reach a report. Keeping it
+#                            out of income/expenses is what guarantees that.
 #
 # THE INVARIANT (correctness gate):
 #     Σ(active wallet balances) + unassigned == current_balance
@@ -360,26 +372,43 @@ def deactivate_wallet(wallet_id: int):
 @with_db_connection
 def set_wallet_balance(wallet_id: int, target_amount: float):
     """Correct a wallet to an exact balance by recording an ADJUSTMENT for the
-    delta — income if it needs to go up, expense if down — tagged to the wallet.
+    delta, tagged to the wallet.
 
     This is the "edit a wallet's balance" action: it means "this wallet should
     actually hold this much", so it changes the wallet AND the overall balance
     (which is the sum of wallet balances). Money is not moved between wallets —
     that is the transfer feature. Balances stay computed/auditable (no stored
-    balance). Returns the delta applied (0.0 when already at target)."""
+    balance). Returns the delta applied (0.0 when already at target).
+
+    The delta goes to `wallet_adjustments`, NOT to income/expenses. A correction
+    is not something you earned or spent, so counting it as either would inflate
+    the monthly summary, the category charts and the advisor's savings rate — the
+    whole reason that table exists."""
     current = get_wallet_balance(wallet_id)
     delta = round(float(target_amount) - current, 2)
     if abs(delta) < 0.005:
         return 0.0
 
-    today = date.today().isoformat()
-    if delta > 0:
-        save_income(amount=delta, source="Other", income_date=today,
-                    desc="Wallet balance adjustment", wallet_id=wallet_id)
-    else:
-        save_expense(amount=-delta, category="Other", expense_date=today,
-                     desc="Wallet balance adjustment", wallet_id=wallet_id)
+    create_wallet_adjustment(wallet_id, delta, desc="Wallet balance adjustment")
     return delta
+
+
+@with_db_connection
+def create_wallet_adjustment(wallet_id: int, amount: float, desc=None, adj_date=None):
+    """Record a signed correction against a wallet (+ raises it, − lowers it).
+
+    Deliberately NOT an income or expense row — see the module header. Defaults to
+    today's date, matching how the other manual entry points behave."""
+    if amount == 0:
+        raise ValueError("An adjustment cannot be zero.")
+    client = get_supabase()
+    row = {
+        "wallet_id": wallet_id,
+        "amount": amount,
+        "description": desc,
+        "date": adj_date or date.today().isoformat(),
+    }
+    return client.table("wallet_adjustments").insert(row).execute().data[0]
 
 
 # ---- Balance horizon + fetch helpers --------------------------------------
@@ -406,9 +435,20 @@ def _active_wallet_ids(client):
     return [w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data]
 
 
+class Movements(NamedTuple):
+    """Every row that can move a wallet, already filtered to the balance horizon.
+
+    Bundled rather than passed as four positional lists so the pure _compute_*
+    helpers can't silently receive them in the wrong order."""
+    income: list
+    expenses: list
+    transfers: list
+    adjustments: list
+
+
 def _post_anchor_movements(client, anchor):
-    """Fetch (income, expenses, transfers) inside the balance horizon: recorded
-    strictly after `anchor`, or ALL rows when there is no anchor at all.
+    """Fetch the Movements inside the balance horizon: recorded strictly after
+    `anchor`, or ALL rows when there is no anchor at all.
 
     Batched: one query per table (no per-wallet N+1)."""
     def rows(table):
@@ -417,43 +457,52 @@ def _post_anchor_movements(client, anchor):
             query = query.gt("created_at", anchor)
         return query.execute().data
 
-    return rows("income"), rows("expenses"), rows("wallet_transfers")
+    return Movements(
+        income=rows("income"),
+        expenses=rows("expenses"),
+        transfers=rows("wallet_transfers"),
+        adjustments=rows("wallet_adjustments"),
+    )
 
 
-def _latest_movement_date(*row_groups):
-    """The most recent `date` across the given row groups, or None when they're all
-    empty. This is what "last updated" means now that there is no manual balance
-    row to date-stamp: the last time money actually moved."""
-    dates = [str(r["date"])[:10] for rows in row_groups for r in rows if r.get("date")]
+def _latest_movement_date(moves: Movements):
+    """The most recent `date` across all movements, or None when there are none.
+    This is what "last updated" means now that there is no manual balance row to
+    date-stamp: the last time money actually moved."""
+    dates = [str(r["date"])[:10] for group in moves for r in group if r.get("date")]
     return max(dates) if dates else None
 
 
 # ---- Pure aggregation (unit-testable, no network) -------------------------
 
-def _compute_wallet_balances(active_ids, income, expenses, transfers):
+def _compute_wallet_balances(active_ids, moves: Movements):
     """{wallet_id: balance} for the given active wallet ids, from the supplied
-    (already horizon-filtered) movement rows. Movements tagged to a wallet_id NOT
+    (already horizon-filtered) movements. Movements tagged to a wallet_id NOT
     in active_ids are ignored here — they belong to Unassigned."""
     active = set(active_ids)
     balances = {wid: 0.0 for wid in active}
-    for i in income:
+    for i in moves.income:
         w = i.get("wallet_id")
         if w in balances:
             balances[w] += i["amount"]
-    for e in expenses:
+    for e in moves.expenses:
         w = e.get("wallet_id")
         if w in balances:
             balances[w] -= e["amount"]
-    for t in transfers:
+    for t in moves.transfers:
         tw, fw = t.get("to_wallet"), t.get("from_wallet")
         if tw in balances:
             balances[tw] += t["amount"]
         if fw in balances:
             balances[fw] -= t["amount"]
+    for a in moves.adjustments:
+        w = a.get("wallet_id")
+        if w in balances:
+            balances[w] += a["amount"]      # already signed
     return balances
 
 
-def _compute_unassigned(active_ids, income, expenses, transfers):
+def _compute_unassigned(active_ids, moves: Movements):
     """Unassigned total = every movement NOT tied to an active wallet (NULL wallet
     or a soft-deleted one). Transfer sides touching a non-active wallet net in/out
     of Unassigned. Complementary to _compute_wallet_balances, so together they
@@ -461,10 +510,11 @@ def _compute_unassigned(active_ids, income, expenses, transfers):
     Σ(wallet balances) + unassigned == current_balance true by construction."""
     active = set(active_ids)
     total = 0.0
-    total += sum(i["amount"] for i in income if i.get("wallet_id") not in active)
-    total -= sum(e["amount"] for e in expenses if e.get("wallet_id") not in active)
-    total += sum(t["amount"] for t in transfers if t.get("to_wallet") not in active)
-    total -= sum(t["amount"] for t in transfers if t.get("from_wallet") not in active)
+    total += sum(i["amount"] for i in moves.income if i.get("wallet_id") not in active)
+    total -= sum(e["amount"] for e in moves.expenses if e.get("wallet_id") not in active)
+    total += sum(t["amount"] for t in moves.transfers if t.get("to_wallet") not in active)
+    total -= sum(t["amount"] for t in moves.transfers if t.get("from_wallet") not in active)
+    total += sum(a["amount"] for a in moves.adjustments if a.get("wallet_id") not in active)
     return total
 
 
@@ -476,9 +526,8 @@ def get_all_wallet_balances():
     client = get_supabase()
     wallets = client.table("wallets").select("*").eq("is_active", True).order("id").execute().data
     active_ids = [w["id"] for w in wallets]
-    anchor = _balance_anchor(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
-    balances = _compute_wallet_balances(active_ids, income, expenses, transfers)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
+    balances = _compute_wallet_balances(active_ids, moves)
     # Round at the read boundary so the wallet cards and the balance (their sum)
     # agree to the cent instead of showing float noise like 100.00000000000013.
     return [
@@ -492,9 +541,8 @@ def get_wallet_balance(wallet_id: int):
     """Computed balance of a single wallet (works for inactive wallets too, for
     the ledger detail view). No date filtering beyond the shared balance anchor."""
     client = get_supabase()
-    anchor = _balance_anchor(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
-    return round(_compute_wallet_balances([wallet_id], income, expenses, transfers)[wallet_id], 2)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
+    return round(_compute_wallet_balances([wallet_id], moves)[wallet_id], 2)
 
 
 @with_db_connection
@@ -502,30 +550,32 @@ def get_unassigned_total():
     """Total money not held in any active wallet (NULL/inactive-tagged movements).
     Part of the invariant: Σ(active balances) + this == current_balance."""
     client = get_supabase()
-    anchor = _balance_anchor(client)
-    active_ids = _active_wallet_ids(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
-    return round(_compute_unassigned(active_ids, income, expenses, transfers), 2)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
+    return round(_compute_unassigned(_active_wallet_ids(client), moves), 2)
 
 
 @with_db_connection
 def get_unassigned_rows():
     """The NULL-wallet (or inactive-wallet) income/expense rows a user can resolve
-    by assigning a wallet. Newest first."""
+    by assigning a wallet. Newest first.
+
+    Only income/expenses appear: transfers and adjustments still COUNT toward the
+    Unassigned total when they touch a non-active wallet, but there is no
+    assign-a-wallet action for them, so listing them as resolvable would be a
+    dead end."""
     client = get_supabase()
-    anchor = _balance_anchor(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
     active = set(_active_wallet_ids(client))
 
     rows = []
-    for i in income:
+    for i in moves.income:
         if i.get("wallet_id") not in active:
             rows.append({
                 "id": i["id"], "type": "income", "amount": i["amount"],
                 "category_or_source": i.get("source"),
                 "description": i.get("description"), "date": i["date"],
             })
-    for e in expenses:
+    for e in moves.expenses:
         if e.get("wallet_id") not in active:
             rows.append({
                 "id": e["id"], "type": "expense", "amount": e["amount"],
@@ -590,10 +640,14 @@ def update_income_wallet(income_id: int, wallet_id):
 def get_wallet_ledger(wallet_id: int):
     """Chronological movements affecting a wallet (post-anchor, so the ledger sums
     to the wallet's balance). Each row: {date, kind, description, amount,
-    signed_amount}. kind ∈ income | expense | transfer_in | transfer_out."""
+    signed_amount}.
+    kind ∈ income | expense | transfer_in | transfer_out | adjustment.
+
+    Adjustments are hidden from every income/expense report, but they belong HERE —
+    this is the audit trail that explains why a wallet holds what it holds."""
     client = get_supabase()
-    anchor = _balance_anchor(client)
-    income, expenses, transfers = _post_anchor_movements(client, anchor)
+    moves = _post_anchor_movements(client, _balance_anchor(client))
+    income, expenses, transfers = moves.income, moves.expenses, moves.transfers
 
     entries = []
     for i in income:
@@ -615,6 +669,11 @@ def get_wallet_ledger(wallet_id: int):
             entries.append({"date": t["date"], "kind": "transfer_out",
                             "description": t.get("description"),
                             "amount": t["amount"], "signed_amount": -t["amount"]})
+    for a in moves.adjustments:
+        if a.get("wallet_id") == wallet_id:
+            entries.append({"date": a["date"], "kind": "adjustment",
+                            "description": a.get("description"),
+                            "amount": abs(a["amount"]), "signed_amount": a["amount"]})
 
     entries.sort(key=lambda x: str(x["date"]))
     return entries

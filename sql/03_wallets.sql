@@ -5,8 +5,9 @@
 -- Idempotent (IF NOT EXISTS), so re-running is safe.
 --
 -- A "wallet" is a named virtual container for money. Balances are COMPUTED from
--- a ledger (tagged income/expenses + transfers), never stored — mirroring the
--- existing main-balance model in db.py. There is deliberately NO balance column.
+-- a ledger (tagged income/expenses + transfers, plus the adjustments added later
+-- in 06_wallet_adjustments.sql), never stored — mirroring the existing
+-- main-balance model in db.py. There is deliberately NO balance column.
 --
 -- The invariant the app relies on:
 --     Σ(active wallet balances) + unassigned == current_balance

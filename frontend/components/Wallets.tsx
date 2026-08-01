@@ -272,24 +272,29 @@ export default function Wallets() {
 
               {/* Balance — read-only, or the "set balance" (correction) editor. */}
               {balancingId === w.id ? (
-                <div className="mt-2 flex items-center gap-1">
-                  <span className="text-sm text-gray-500">RM</span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    className="w-28 rounded border border-gray-300 px-2 py-1 text-sm"
-                    value={balanceDraft}
-                    onChange={(e) => setBalanceDraft(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSetBalance(w.id)}
-                    autoFocus
-                  />
-                  <button className="rounded px-2 text-sm text-violet-700" onClick={() => handleSetBalance(w.id)}>
-                    Save
-                  </button>
-                  <button className="rounded px-2 text-sm text-gray-500" onClick={() => setBalancingId(null)}>
-                    ✕
-                  </button>
+                <div className="mt-2">
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-gray-500">RM</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      className="w-28 rounded border border-gray-300 px-2 py-1 text-sm"
+                      value={balanceDraft}
+                      onChange={(e) => setBalanceDraft(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSetBalance(w.id)}
+                      autoFocus
+                    />
+                    <button className="rounded px-2 text-sm text-violet-700" onClick={() => handleSetBalance(w.id)}>
+                      Save
+                    </button>
+                    <button className="rounded px-2 text-sm text-gray-500" onClick={() => setBalancingId(null)}>
+                      ✕
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    Recorded as a correction — not counted as income or spending.
+                  </p>
                 </div>
               ) : (
                 <p className={`mt-2 text-2xl font-bold tracking-tight ${w.balance < 0 ? "text-rose-600" : "text-gray-900"}`}>
@@ -472,7 +477,20 @@ export default function Wallets() {
                   {ledger.map((e, i) => (
                     <tr key={i} className="border-t border-gray-100">
                       <td className="px-3 py-2 text-gray-600">{e.date}</td>
-                      <td className="px-3 py-2 text-gray-600">{e.kind.replace("_", " ")}</td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {e.kind.replace("_", " ")}
+                        {/* Adjustments move the wallet but aren't earning/spending,
+                            so flag them — otherwise the ledger looks like it
+                            disagrees with the dashboard. */}
+                        {e.kind === "adjustment" && (
+                          <span
+                            className="ml-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500"
+                            title="A correction to this wallet's balance. Not counted as income or spending."
+                          >
+                            not budgeted
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-gray-700">{e.description || "—"}</td>
                       <td
                         className={`px-3 py-2 text-right font-medium ${

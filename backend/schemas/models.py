@@ -156,7 +156,10 @@ class WalletResponse(BaseModel):
 class LedgerEntry(BaseModel):
     """One movement in a wallet's ledger (GET /wallets/{id}/ledger)."""
     date: str
-    kind: str                          # income | expense | transfer_in | transfer_out
+    # income | expense | transfer_in | transfer_out | adjustment
+    # "adjustment" is a correction to what the wallet holds — real money, but not
+    # a budget event, so it never appears in the summary/charts/advisor.
+    kind: str
     description: str | None = None
     amount: float
     signed_amount: float               # + into the wallet, − out of it
