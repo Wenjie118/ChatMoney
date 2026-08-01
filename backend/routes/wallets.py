@@ -103,6 +103,9 @@ def set_balance(wallet_id: int, payload: SetWalletBalanceRequest) -> WalletRespo
 
     "This wallet should have this much" — changes the wallet and the overall
     balance. To move money between wallets, use a transfer instead.
+
+    The delta is written to `wallet_adjustments`, so it never shows up as income or
+    spending in the monthly summary, the charts or the AI advisor.
     """
     try:
         set_wallet_balance(wallet_id, payload.amount)

@@ -17,18 +17,26 @@ directly (they take already-filtered rows), so no Supabase call happens.
 import db
 
 
-def _ground_truth(income, expenses):
+def _moves(income=(), expenses=(), transfers=(), adjustments=()):
+    return db.Movements(list(income), list(expenses), list(transfers), list(adjustments))
+
+
+def _ground_truth(moves):
     """All the money in the horizon, ignoring wallets entirely: Σ income − Σ
-    expenses. Transfers never appear — a transfer moves money between wallets, so
-    the system total is unchanged."""
-    return sum(i["amount"] for i in income) - sum(e["amount"] for e in expenses)
+    expenses + Σ adjustments (already signed). Transfers never appear — a transfer
+    moves money between wallets, so the system total is unchanged."""
+    return (
+        sum(i["amount"] for i in moves.income)
+        - sum(e["amount"] for e in moves.expenses)
+        + sum(a["amount"] for a in moves.adjustments)
+    )
 
 
-def _assert_invariant(active_ids, income, expenses, transfers):
-    balances = db._compute_wallet_balances(active_ids, income, expenses, transfers)
-    unassigned = db._compute_unassigned(active_ids, income, expenses, transfers)
+def _assert_invariant(active_ids, moves):
+    balances = db._compute_wallet_balances(active_ids, moves)
+    unassigned = db._compute_unassigned(active_ids, moves)
     current = sum(balances.values()) + unassigned          # == get_balance()
-    assert round(current, 6) == round(_ground_truth(income, expenses), 6)
+    assert round(current, 6) == round(_ground_truth(moves), 6)
     return balances, unassigned
 
 
@@ -37,7 +45,7 @@ def test_invariant_no_wallets():
     # standalone baseline padding it any more.
     income = [{"amount": 5000, "wallet_id": None}]
     expenses = [{"amount": 1200, "wallet_id": None}]
-    balances, unassigned = _assert_invariant([], income, expenses, [])
+    balances, unassigned = _assert_invariant([], _moves(income, expenses))
     assert balances == {}
     assert round(unassigned, 2) == 5000 - 1200
 
@@ -46,7 +54,7 @@ def test_invariant_tagged_income_and_expense():
     active = [1, 2]
     income = [{"amount": 3000, "wallet_id": 1}, {"amount": 500, "wallet_id": None}]
     expenses = [{"amount": 200, "wallet_id": 1}, {"amount": 100, "wallet_id": 2}]
-    balances, _ = _assert_invariant(active, income, expenses, [])
+    balances, _ = _assert_invariant(active, _moves(income, expenses))
     assert balances[1] == 3000 - 200   # tagged income minus tagged expense
     assert balances[2] == -100
 
@@ -56,7 +64,7 @@ def test_invariant_with_full_transfer():
     active = [1, 2]
     income = [{"amount": 1000, "wallet_id": 1}]
     transfers = [{"amount": 400, "from_wallet": 1, "to_wallet": 2}]
-    balances, unassigned = _assert_invariant(active, income, [], transfers)
+    balances, unassigned = _assert_invariant(active, _moves(income, transfers=transfers))
     assert balances[1] == 600
     assert balances[2] == 400
     assert unassigned == 0
@@ -67,7 +75,7 @@ def test_invariant_half_resolved_transfer_to_null():
     active = [1]
     income = [{"amount": 1000, "wallet_id": 1}]
     transfers = [{"amount": 250, "from_wallet": 1, "to_wallet": None}]
-    balances, unassigned = _assert_invariant(active, income, [], transfers)
+    balances, unassigned = _assert_invariant(active, _moves(income, transfers=transfers))
     assert balances[1] == 750
     assert unassigned == 250
 
@@ -77,7 +85,7 @@ def test_invariant_half_resolved_transfer_from_null():
     # so the system total stays 0 (no income or expense actually happened).
     active = [1]
     transfers = [{"amount": 300, "from_wallet": None, "to_wallet": 1}]
-    balances, unassigned = _assert_invariant(active, [], [], transfers)
+    balances, unassigned = _assert_invariant(active, _moves(transfers=transfers))
     assert balances[1] == 300
     assert unassigned == -300
 
@@ -88,7 +96,7 @@ def test_invariant_money_in_soft_deleted_wallet_folds_into_unassigned():
     active = [1]  # wallet 2 is inactive
     income = [{"amount": 800, "wallet_id": 1}, {"amount": 500, "wallet_id": 2}]
     expenses = [{"amount": 300, "wallet_id": 2}]
-    balances, unassigned = _assert_invariant(active, income, expenses, [])
+    balances, unassigned = _assert_invariant(active, _moves(income, expenses))
     assert balances == {1: 800}
     assert unassigned == 500 - 300  # wallet 2's net, now unassigned
 
@@ -99,7 +107,7 @@ def test_balance_equals_wallet_total_when_nothing_is_unassigned():
     active = [1, 2]
     income = [{"amount": 7000, "wallet_id": 1}, {"amount": 1500, "wallet_id": 2}]
     expenses = [{"amount": 250, "wallet_id": 1}]
-    balances, unassigned = _assert_invariant(active, income, expenses, [])
+    balances, unassigned = _assert_invariant(active, _moves(income, expenses))
     assert unassigned == 0
     assert sum(balances.values()) == 7000 + 1500 - 250
 
@@ -111,17 +119,37 @@ def test_editing_a_wallet_moves_the_total_by_exactly_the_delta():
     # must move by that delta and nothing more.
     active = [1, 2]
     income = [{"amount": 400, "wallet_id": 1}, {"amount": 600, "wallet_id": 2}]
-    balances, unassigned = _assert_invariant(active, income, [], [])
+    balances, unassigned = _assert_invariant(active, _moves(income))
     before = sum(balances.values()) + unassigned
     assert before == 1000
 
-    # Correct wallet 1 from 400 -> 550: db.set_wallet_balance writes +150 income.
-    adjusted_income = income + [{"amount": 150, "wallet_id": 1}]
-    balances, unassigned = _assert_invariant(active, adjusted_income, [], [])
+    # Correct wallet 1 from 400 -> 550: set_wallet_balance writes a +150 adjustment.
+    moves = _moves(income, adjustments=[{"amount": 150, "wallet_id": 1}])
+    balances, unassigned = _assert_invariant(active, moves)
     after = sum(balances.values()) + unassigned
     assert balances[1] == 550          # wallet shows exactly what was typed
     assert after == before + 150       # total moved by the delta, not stacked
     assert after == sum(balances.values())  # still exactly the wallet total
+
+
+def test_negative_adjustment_lowers_the_wallet_and_the_total():
+    # Adjustments carry their own sign — there is no separate "expense" direction.
+    active = [1]
+    income = [{"amount": 1000, "wallet_id": 1}]
+    moves = _moves(income, adjustments=[{"amount": -250, "wallet_id": 1}])
+    balances, unassigned = _assert_invariant(active, moves)
+    assert balances[1] == 750
+    assert unassigned == 0
+
+
+def test_adjustment_on_a_soft_deleted_wallet_folds_into_unassigned():
+    # Same rule as every other movement: money on an inactive wallet is Unassigned,
+    # so the invariant survives a delete.
+    active = [1]  # wallet 2 is inactive
+    moves = _moves(adjustments=[{"amount": 500, "wallet_id": 2}, {"amount": 100, "wallet_id": 1}])
+    balances, unassigned = _assert_invariant(active, moves)
+    assert balances == {1: 100}
+    assert unassigned == 500
 
 
 def test_invariant_kitchen_sink():
@@ -141,4 +169,9 @@ def test_invariant_kitchen_sink():
         {"amount": 150, "from_wallet": 2, "to_wallet": 3},
         {"amount": 75, "from_wallet": 3, "to_wallet": None},   # to unknown
     ]
-    _assert_invariant(active, income, expenses, transfers)
+    adjustments = [
+        {"amount": 320.50, "wallet_id": 2},
+        {"amount": -45.25, "wallet_id": 3},
+        {"amount": 60, "wallet_id": None},     # adjustment with no wallet
+    ]
+    _assert_invariant(active, _moves(income, expenses, transfers, adjustments))

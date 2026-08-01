@@ -98,7 +98,9 @@ export interface IWallet {
 /** One movement in a wallet's ledger (GET /wallets/{id}/ledger). */
 export interface ILedgerEntry {
   date: string;
-  /** income | expense | transfer_in | transfer_out */
+  /** income | expense | transfer_in | transfer_out | adjustment
+   *  ("adjustment" = a correction to what the wallet holds; real money, but not
+   *  a budget event, so it stays out of the summary/charts/advisor.) */
   kind: string;
   description: string | null;
   amount: number;
