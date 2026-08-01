@@ -145,13 +145,8 @@ export async function getRecent(month: number, year: number): Promise<ITransacti
   );
 }
 
-/**
- * PUT /balance — set a new manual balance; returns the refreshed snapshot.
- */
-export async function setBalance(amount: number): Promise<IBalance> {
-  // body matches SetBalanceRequest { amount }
-  return request<IBalance>("/balance", jsonBody("PUT", { amount }));
-}
+// NOTE: there is no setBalance(). The balance is derived from wallets — change it
+// with setWalletBalance() (PATCH /wallets/{id}/balance) instead.
 
 /**
  * POST /advisor/advice — get AI advice for a month.

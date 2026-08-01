@@ -22,12 +22,14 @@ from pydantic import BaseModel, Field
 class BalanceResponse(BaseModel):
     """Shape of GET /balance.
 
-    Mirrors db.get_balance(): current/manual balance plus an optional date string.
-    `last_updated` is Optional because get_balance returns None when no balance row
-    exists yet.
+    Mirrors db.get_balance(). The balance is DERIVED — `current_balance` is exactly
+    `wallet_total + unassigned` — so the response ships its own breakdown and the UI
+    never has to re-add anything. `last_updated` (date of the most recent movement)
+    is Optional because there may not be any movements yet.
     """
     current_balance: float
-    manual_balance: float
+    wallet_total: float                # Σ of active wallet balances
+    unassigned: float                  # real money not in a wallet yet
     last_updated: str | None = None
 
 
@@ -111,11 +113,6 @@ class SummaryResponse(BaseModel):
     total_expenses: float
     net_savings: float
     savings_rate: float                # percentage, e.g. 23.5 means 23.5%
-
-
-class SetBalanceRequest(BaseModel):
-    """Input for PUT /balance (Slice 6) — the new manual balance the user typed."""
-    amount: float = Field(ge=0)        # a balance can be 0 but not negative
 
 
 class AdviceRequest(BaseModel):

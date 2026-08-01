@@ -26,7 +26,7 @@ It was **originally a Streamlit app** and was migrated to a **React (Next.js) fr
 - `@tanstack/react-table` is a dependency but the preview table is hand-rolled
 
 **Infra / dev**
-- Database: **Supabase** with three tables: `expenses`, `income`, `balance`
+- Database: **Supabase** — `expenses`, `income`, `balance` (anchor only), `wallets`, `wallet_transfers`
 - LLM: **Google AI Studio** API key
 - `ChatMoney.bat` — Windows launcher that boots backend (uvicorn :8000) + frontend (next dev :3000) and opens the browser
 - Secrets in `.env` (root, for `db.py`/`llm.py`) and `frontend/.env.local` (`NEXT_PUBLIC_API_URL`)
@@ -50,7 +50,7 @@ ChatMoney/
 │   │                          #   adds project root to sys.path so it can `import db, llm`
 │   ├── requirements.txt
 │   ├── routes/
-│   │   ├── balance.py         # GET/PUT  /balance        (reference pattern)
+│   │   ├── balance.py         # GET /balance (read-only — derived from wallets)
 │   │   ├── transactions.py    # /transactions/{parse, parse-pdf, recent, summary, save-multiple}
 │   │   └── advisor.py         # POST /advisor/advice, GET /advisor/periods
 │   ├── schemas/models.py      # Pydantic request/response models (mirror frontend types)
@@ -70,7 +70,7 @@ ChatMoney/
     │   ├── ChatInterface.tsx       # text input + PDF upload, chat-bubble confirmations
     │   ├── TransactionPreview.tsx  # editable review table before bulk-saving PDF rows
     │   ├── Dashboard.tsx           # month picker → 4 metric cards + bar/pie charts + table
-    │   ├── BalanceCard.tsx         # shows/sets current balance
+    │   ├── BalanceCard.tsx         # shows current balance (read-only; edit via Wallets)
     │   └── Advisor.tsx             # month dropdown → "Get advice" → renders markdown
     ├── lib/
     │   ├── api.ts             # the ONE place fetch() is called; one fn per endpoint
@@ -97,8 +97,10 @@ ChatMoney/
 - Robustness: `_invoke_with_retry` (exponential backoff on 429/5xx), `_friendly_api_error` (user-facing messages), `_extract_json_array` (strips code fences, falls back to slicing outermost `[...]`).
 
 ## Database (`db.py`)
-- Tables: `expenses` (amount, category, description, date), `income` (amount, source, description, date), `balance` (manual_balance, last_updated, created_at).
-- **Balance is computed**, not stored live: `current_balance = latest manual_balance + (income − expenses recorded after that balance row's `created_at`)`.
+- Tables: `expenses` (amount, category, description, date, wallet_id), `income` (amount, source, description, date, wallet_id), `balance` (manual_balance, last_updated, created_at), `wallets`, `wallet_transfers`.
+- **Balance is derived from wallets**, never stored: `current_balance = Σ(active wallet balances) + unassigned`. Editing a wallet (`PATCH /wallets/{id}/balance`) records an adjustment for the delta, so the total moves by exactly that much. There is **no `PUT /balance`** — writing a balance would drop a new anchor row dated now and reset every wallet to zero.
+- The `balance` table is only the **wallet-era anchor**: its latest `created_at` is the horizon (movements strictly after it count; older pre-wallet rows are excluded). Its `manual_balance` column is no longer read — see `sql/05_retire_manual_balance.sql`. Never delete the anchor row.
+- `unassigned` = money inside the horizon not tagged to an active wallet (NULL or soft-deleted wallet). It keeps untagged imports from being silently dropped; once every row is assigned, `current_balance` equals the wallet total exactly.
 - Connection hardening: validates `SUPABASE_URL`, DNS-resolves the host, wraps calls in `with_db_connection` to raise a friendly `DatabaseConnectionError`.
 
 ## How to run

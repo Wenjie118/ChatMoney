@@ -15,19 +15,18 @@
 -- computed "current balance" in db.py is deterministic, not dependent on
 -- insertion order.
 --
--- Balance model (db.py): current_balance =
---     latest manual_balance
---   + (income  with created_at > balance.created_at)
---   - (expenses with created_at > balance.created_at)
--- We anchor one balance row at 2025-05-31 (before all mock data), so the app
--- shows a realistic running balance = 5000 + all mock income - all mock expenses.
--- When you later set your own balance in the app, that newer row takes over and
--- this mock history no longer distorts it.
+-- Balance model (db.py): current_balance = Σ(active wallet balances) + unassigned,
+-- both summed over movements with created_at > balance.created_at. The balance row
+-- below is therefore an ANCHOR (a horizon), not money — its manual_balance is
+-- never read. We anchor it at 2025-05-31, before all mock data, so every seeded
+-- transaction counts: the app shows all mock income - all mock expenses, sitting
+-- in Unassigned until you create wallets and assign it.
 -- ============================================================================
 
--- Starting balance anchored just BEFORE the mock history begins.
+-- Horizon anchor placed just BEFORE the mock history begins. The amount is 0
+-- because manual_balance is no longer money — only created_at matters here.
 INSERT INTO balance (manual_balance, last_updated, created_at)
-VALUES (5000, DATE '2025-05-31', TIMESTAMP '2025-05-31 08:00:00');
+VALUES (0, DATE '2025-05-31', TIMESTAMP '2025-05-31 08:00:00');
 
 DO $$
 DECLARE

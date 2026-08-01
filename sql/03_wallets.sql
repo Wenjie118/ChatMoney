@@ -10,9 +10,11 @@
 --
 -- The invariant the app relies on:
 --     Σ(active wallet balances) + unassigned == current_balance
--- computed over movements after the latest balance anchor (same horizon as
--- get_balance), with manual_balance as the Unassigned baseline. Money tagged to
--- a NULL wallet OR a soft-deleted wallet counts toward Unassigned.
+-- get_balance() DEFINES the balance as that sum, so it holds by construction.
+-- Both sides are computed over movements recorded after the latest `balance` row
+-- (the wallet-era anchor — a horizon only; its manual_balance is not read; see
+-- 05_retire_manual_balance.sql). Money tagged to a NULL wallet OR a soft-deleted
+-- wallet counts toward Unassigned, so nothing is lost or double-counted.
 -- ============================================================================
 
 -- Named virtual wallets. Soft-delete only (is_active = false); never hard-delete,

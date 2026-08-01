@@ -197,45 +197,41 @@ def get_monthly_summary():
     return details
 
 @with_db_connection
-def set_balance(amount):
-    client = get_supabase()
-    balance = {
-        "manual_balance": amount,
-        "last_updated": date.today().isoformat(),
-    }
-    response = client.table("balance").insert(balance).execute()
-    return response
-
-@with_db_connection
 def get_balance():
+    """Current balance — DERIVED from wallets, never stored as its own figure.
+
+        current_balance = Σ(active wallet balances) + unassigned
+
+    So editing a wallet MOVES the total by exactly that much, instead of stacking
+    on top of a separate balance number. There is no "set the balance" action any
+    more: you set a wallet, and the balance follows.
+
+    `unassigned` is real money that isn't in a wallet yet (e.g. a PDF import whose
+    wallet couldn't be inferred). It's counted so money is never silently dropped,
+    and the UI surfaces those rows for assignment — once everything is assigned,
+    current_balance is exactly the sum of your wallets.
+
+    The `balance` table is no longer a source of money. Its latest row survives ONLY
+    as the wallet-era ANCHOR (see _balance_anchor); its manual_balance column is
+    ignored.
+
+    Returns {current_balance, wallet_total, unassigned, last_updated}, where
+    last_updated is the date of the most recent movement (None when there are none).
+    """
     client = get_supabase()
-    response = client.table("balance").select("*").order("created_at", desc=True).limit(1).execute()
+    anchor = _balance_anchor(client)
+    active_ids = _active_wallet_ids(client)
+    income, expenses, transfers = _post_anchor_movements(client, anchor)
 
-    if not response.data:
-        return {
-            "current_balance": 0.0,
-            "manual_balance":  0.0,
-            "last_updated":    None
-        }
-
-    row = response.data[0]
-    manual_balance = row["manual_balance"]
-    last_updated = datetime.strptime(row["last_updated"], "%Y-%m-%d").date().isoformat()
-
-    anchor = row["created_at"]
-
-    incomes  = client.table("income").select("*").gt("created_at", anchor).execute().data
-    expenses = client.table("expenses").select("*").gt("created_at", anchor).execute().data
-
-    total_income  = sum(i["amount"] for i in incomes)
-    total_expense = sum(e["amount"] for e in expenses)
-
-    current_balance = manual_balance + total_income - total_expense
+    balances = _compute_wallet_balances(active_ids, income, expenses, transfers)
+    wallet_total = sum(balances.values())
+    unassigned = _compute_unassigned(active_ids, income, expenses, transfers)
 
     return {
-        "current_balance": current_balance,
-        "manual_balance":  manual_balance,
-        "last_updated":    str(last_updated)
+        "current_balance": round(wallet_total + unassigned, 2),
+        "wallet_total":    round(wallet_total, 2),
+        "unassigned":      round(unassigned, 2),
+        "last_updated":    _latest_movement_date(income, expenses, transfers),
     }
 
 
@@ -310,10 +306,11 @@ def get_logged_periods():
 #
 # THE INVARIANT (correctness gate):
 #     Σ(active wallet balances) + unassigned == current_balance
-# All three are computed over the SAME horizon as get_balance() — movements with
-# created_at strictly after the latest balance row — with manual_balance as the
-# Unassigned baseline. Money tagged to a NULL wallet OR a soft-deleted (inactive)
-# wallet counts toward Unassigned, so the invariant holds even after a delete.
+# This now holds BY CONSTRUCTION rather than by coincidence: get_balance() is
+# literally defined as that sum. Wallets and Unassigned partition every movement
+# inside the horizon exactly once — money tagged to a NULL wallet OR to a
+# soft-deleted (inactive) wallet falls to Unassigned, so nothing is lost or
+# double-counted, even after a delete.
 #
 # The aggregation is split into pure, network-free helpers (_compute_*) so the
 # invariant can be unit-tested without touching Supabase.
@@ -387,29 +384,48 @@ def set_wallet_balance(wallet_id: int, target_amount: float):
 
 # ---- Balance horizon + fetch helpers --------------------------------------
 
-def _latest_balance_anchor(client):
-    """(manual_balance, created_at) of the latest balance row, or (0.0, None)
-    when none exists. Mirrors get_balance()'s anchoring so wallet math shares the
-    exact same horizon."""
-    resp = client.table("balance").select("*").order("created_at", desc=True).limit(1).execute()
-    if not resp.data:
-        return 0.0, None
-    row = resp.data[0]
-    return row["manual_balance"], row["created_at"]
+def _balance_anchor(client):
+    """created_at of the latest `balance` row — the WALLET-ERA HORIZON.
+
+    Only movements recorded strictly after it count toward wallets and the balance;
+    older rows are pre-wallet history that the anchor row already summarised, so
+    counting them again would double up. The row's manual_balance is NOT read —
+    balance is the sum of wallets now, not a stored figure.
+
+    Returns None when no balance row exists, which means there is no pre-wallet
+    history to exclude and every movement counts (see _post_anchor_movements)."""
+    resp = (
+        client.table("balance").select("created_at")
+        .order("created_at", desc=True).limit(1).execute()
+    )
+    return resp.data[0]["created_at"] if resp.data else None
+
+
+def _active_wallet_ids(client):
+    """ids of every active (not soft-deleted) wallet."""
+    return [w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data]
 
 
 def _post_anchor_movements(client, anchor):
-    """Fetch (income, expenses, transfers) with created_at strictly after the
-    anchor — the same filter get_balance() uses. Empty when there is no anchor
-    (get_balance returns 0 in that degenerate case, so wallets do too).
+    """Fetch (income, expenses, transfers) inside the balance horizon: recorded
+    strictly after `anchor`, or ALL rows when there is no anchor at all.
 
     Batched: one query per table (no per-wallet N+1)."""
-    if anchor is None:
-        return [], [], []
-    income = client.table("income").select("*").gt("created_at", anchor).execute().data
-    expenses = client.table("expenses").select("*").gt("created_at", anchor).execute().data
-    transfers = client.table("wallet_transfers").select("*").gt("created_at", anchor).execute().data
-    return income, expenses, transfers
+    def rows(table):
+        query = client.table(table).select("*")
+        if anchor is not None:
+            query = query.gt("created_at", anchor)
+        return query.execute().data
+
+    return rows("income"), rows("expenses"), rows("wallet_transfers")
+
+
+def _latest_movement_date(*row_groups):
+    """The most recent `date` across the given row groups, or None when they're all
+    empty. This is what "last updated" means now that there is no manual balance
+    row to date-stamp: the last time money actually moved."""
+    dates = [str(r["date"])[:10] for rows in row_groups for r in rows if r.get("date")]
+    return max(dates) if dates else None
 
 
 # ---- Pure aggregation (unit-testable, no network) -------------------------
@@ -437,13 +453,14 @@ def _compute_wallet_balances(active_ids, income, expenses, transfers):
     return balances
 
 
-def _compute_unassigned(manual_balance, active_ids, income, expenses, transfers):
-    """Unassigned total = manual_balance baseline + every movement NOT tied to an
-    active wallet (NULL wallet or a soft-deleted one). Transfer sides touching a
-    non-active wallet net in/out of Unassigned. Complementary to
-    _compute_wallet_balances, so together they partition all money exactly once."""
+def _compute_unassigned(active_ids, income, expenses, transfers):
+    """Unassigned total = every movement NOT tied to an active wallet (NULL wallet
+    or a soft-deleted one). Transfer sides touching a non-active wallet net in/out
+    of Unassigned. Complementary to _compute_wallet_balances, so together they
+    partition all money exactly once — which is what makes
+    Σ(wallet balances) + unassigned == current_balance true by construction."""
     active = set(active_ids)
-    total = float(manual_balance or 0.0)
+    total = 0.0
     total += sum(i["amount"] for i in income if i.get("wallet_id") not in active)
     total -= sum(e["amount"] for e in expenses if e.get("wallet_id") not in active)
     total += sum(t["amount"] for t in transfers if t.get("to_wallet") not in active)
@@ -459,11 +476,13 @@ def get_all_wallet_balances():
     client = get_supabase()
     wallets = client.table("wallets").select("*").eq("is_active", True).order("id").execute().data
     active_ids = [w["id"] for w in wallets]
-    _, anchor = _latest_balance_anchor(client)
+    anchor = _balance_anchor(client)
     income, expenses, transfers = _post_anchor_movements(client, anchor)
     balances = _compute_wallet_balances(active_ids, income, expenses, transfers)
+    # Round at the read boundary so the wallet cards and the balance (their sum)
+    # agree to the cent instead of showing float noise like 100.00000000000013.
     return [
-        {"id": w["id"], "name": w["name"], "balance": balances.get(w["id"], 0.0)}
+        {"id": w["id"], "name": w["name"], "balance": round(balances.get(w["id"], 0.0), 2)}
         for w in wallets
     ]
 
@@ -473,31 +492,30 @@ def get_wallet_balance(wallet_id: int):
     """Computed balance of a single wallet (works for inactive wallets too, for
     the ledger detail view). No date filtering beyond the shared balance anchor."""
     client = get_supabase()
-    _, anchor = _latest_balance_anchor(client)
+    anchor = _balance_anchor(client)
     income, expenses, transfers = _post_anchor_movements(client, anchor)
-    return _compute_wallet_balances([wallet_id], income, expenses, transfers)[wallet_id]
+    return round(_compute_wallet_balances([wallet_id], income, expenses, transfers)[wallet_id], 2)
 
 
 @with_db_connection
 def get_unassigned_total():
-    """Total money not held in any active wallet (baseline + NULL/inactive-tagged
-    movements). Part of the invariant: Σ(active balances) + this == current_balance."""
+    """Total money not held in any active wallet (NULL/inactive-tagged movements).
+    Part of the invariant: Σ(active balances) + this == current_balance."""
     client = get_supabase()
-    manual_balance, anchor = _latest_balance_anchor(client)
-    active_ids = [w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data]
+    anchor = _balance_anchor(client)
+    active_ids = _active_wallet_ids(client)
     income, expenses, transfers = _post_anchor_movements(client, anchor)
-    return _compute_unassigned(manual_balance, active_ids, income, expenses, transfers)
+    return round(_compute_unassigned(active_ids, income, expenses, transfers), 2)
 
 
 @with_db_connection
 def get_unassigned_rows():
     """The NULL-wallet (or inactive-wallet) income/expense rows a user can resolve
-    by assigning a wallet. The manual_balance baseline is intentionally NOT a row —
-    it is not a resolvable transaction. Newest first."""
+    by assigning a wallet. Newest first."""
     client = get_supabase()
-    _, anchor = _latest_balance_anchor(client)
+    anchor = _balance_anchor(client)
     income, expenses, transfers = _post_anchor_movements(client, anchor)
-    active = set(w["id"] for w in client.table("wallets").select("id").eq("is_active", True).execute().data)
+    active = set(_active_wallet_ids(client))
 
     rows = []
     for i in income:
@@ -574,7 +592,7 @@ def get_wallet_ledger(wallet_id: int):
     to the wallet's balance). Each row: {date, kind, description, amount,
     signed_amount}. kind ∈ income | expense | transfer_in | transfer_out."""
     client = get_supabase()
-    _, anchor = _latest_balance_anchor(client)
+    anchor = _balance_anchor(client)
     income, expenses, transfers = _post_anchor_movements(client, anchor)
 
     entries = []

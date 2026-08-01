@@ -373,7 +373,7 @@ Situation rules:
 - If total_income is zero → do not calculate savings rate, summarize expenses only, encourage user to log income, focus on helping them survive on their current balance
 - If savings rate is negative → gently flag overspending without being harsh
 - If balance is low relative to monthly expenses → mention runway without alarming the user
-- current_balance is an estimate based on manual_balance plus transactions since last_updated — present it as an estimate, not a guaranteed figure
+- current_balance is the total across the user's wallets (wallet_total) plus any money not yet assigned to a wallet (unassigned) — if unassigned is not zero, you may mention that some money still needs to be assigned to a wallet
 """
 
 # Above this many expense rows in a month, send the advisor a compact

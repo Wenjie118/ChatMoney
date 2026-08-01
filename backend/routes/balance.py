@@ -1,8 +1,13 @@
 """
-Balance endpoints.
+Balance endpoint.
 
     GET  /balance   -> current balance snapshot              (COMPLETE — example)
-    PUT  /balance   -> set a new manual balance              (TODO stub)
+
+The balance is READ-ONLY: it is derived as Σ(wallet balances) + unassigned, so it
+is changed by editing a WALLET (PATCH /wallets/{id}/balance), never by writing a
+balance. There is deliberately no PUT /balance — setting a manual balance would
+write a new anchor row dated now, which would push every existing movement out of
+the horizon and reset all wallet balances to zero.
 
 This module is the REFERENCE PATTERN for the whole backend. Read GET /balance
 closely; every other endpoint follows the same shape:
@@ -19,8 +24,8 @@ from fastapi import APIRouter
 
 # db.py lives at the project root; it's importable thanks to the sys.path line
 # in main.py.
-from db import get_balance, set_balance
-from schemas.models import BalanceResponse, SetBalanceRequest
+from db import get_balance
+from schemas.models import BalanceResponse
 
 router = APIRouter()
 
@@ -30,10 +35,11 @@ router = APIRouter()
 # ===========================================================================
 @router.get("", response_model=BalanceResponse)
 def read_balance() -> BalanceResponse:
-    """Return the latest balance snapshot.
+    """Return the current balance snapshot.
 
-    Calls `db.get_balance()`, which returns a dict:
-        {"current_balance": float, "manual_balance": float, "last_updated": str|None}
+    Calls `db.get_balance()`, which derives the balance from wallets and returns:
+        {"current_balance": float,   # == wallet_total + unassigned
+         "wallet_total": float, "unassigned": float, "last_updated": str|None}
 
     `response_model=BalanceResponse` makes FastAPI validate & shape the output and
     document it at /docs. If Supabase is unreachable, `get_balance` raises
@@ -43,23 +49,4 @@ def read_balance() -> BalanceResponse:
     Reachable at GET /balance  (the "" path + the "/balance" prefix from main.py).
     """
     # FastAPI coerces this dict into BalanceResponse and returns it as JSON.
-    return BalanceResponse(**get_balance())
-
-
-# ===========================================================================
-# TODO STUB — implement following the pattern above.
-# ===========================================================================
-@router.put("", response_model=BalanceResponse)
-def update_balance(payload: SetBalanceRequest) -> BalanceResponse:
-    """Set a new manual balance, then return the refreshed snapshot.
-
-    `db.set_balance` writes a new balance row; `db.get_balance` then re-reads the
-    latest balance (recomputed from that anchor + any later income/expenses). We
-    return the refreshed snapshot — typed as BalanceResponse — so the frontend can
-    update the card from the response without a second request.
-
-    A Supabase outage raises `DatabaseConnectionError`, mapped to 503 by the
-    global handler in main.py.
-    """
-    set_balance(payload.amount)
     return BalanceResponse(**get_balance())

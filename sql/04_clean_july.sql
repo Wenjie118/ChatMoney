@@ -16,12 +16,10 @@
 --       • wallet_transfers  dated in July 2026   (optional — see note below)
 --
 --     Consequences to expect:
---       • current_balance = manual_balance + (income − expenses) after the
---         latest balance anchor. Deleting July income/expenses that fall after
---         that anchor WILL change your current balance.
---       • Wallet balances are computed from these same rows, so any wallet that
---         had July movement will change too. The invariant
---         (Σ wallets + unassigned == current_balance) still holds afterward —
+--       • Wallet balances are computed from these rows, so any wallet that had
+--         July movement will change.
+--       • current_balance IS the sum of your wallets (+ anything unassigned), so
+--         it moves with them automatically. The invariant still holds afterward —
 --         it's just a smaller total.
 --
 -- Only ChatMoney app tables are touched; Supabase auth/storage/system tables

@@ -20,7 +20,12 @@ client = TestClient(app, raise_server_exceptions=False)
 # balance
 # ---------------------------------------------------------------------------
 def test_get_balance_happy_path():
-    snapshot = {"current_balance": 1234.5, "manual_balance": 1000.0, "last_updated": "2026-07-01"}
+    snapshot = {
+        "current_balance": 1234.5,
+        "wallet_total": 1200.0,
+        "unassigned": 34.5,
+        "last_updated": "2026-07-01",
+    }
     with patch("routes.balance.get_balance", return_value=snapshot):
         res = client.get("/balance")
     assert res.status_code == 200
@@ -34,22 +39,11 @@ def test_get_balance_db_down_returns_503():
     assert "supabase down" in res.json()["detail"]
 
 
-def test_put_balance_happy_path_returns_refreshed_snapshot():
-    snapshot = {"current_balance": 500.0, "manual_balance": 500.0, "last_updated": "2026-07-12"}
-    with patch("routes.balance.set_balance") as m_set, \
-         patch("routes.balance.get_balance", return_value=snapshot):
-        res = client.put("/balance", json={"amount": 500})
-    assert res.status_code == 200
-    assert res.json() == snapshot
-    m_set.assert_called_once_with(500.0)
-
-
-def test_put_balance_rejects_negative_amount_with_422():
-    # SetBalanceRequest.amount is Field(ge=0) -> pydantic validation error.
-    with patch("routes.balance.set_balance") as m_set:
-        res = client.put("/balance", json={"amount": -1})
-    assert res.status_code == 422
-    m_set.assert_not_called()
+def test_balance_is_read_only_no_put_endpoint():
+    # The balance is derived from wallets; writing one would drop a new anchor row
+    # dated now and reset every wallet to zero. Change a wallet instead.
+    res = client.put("/balance", json={"amount": 500})
+    assert res.status_code == 405
 
 
 # ---------------------------------------------------------------------------
