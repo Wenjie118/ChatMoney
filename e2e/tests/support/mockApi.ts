@@ -31,9 +31,12 @@ import type { Page, Route } from "@playwright/test";
 // Default fixture data (edit freely — these are just realistic examples).
 // ---------------------------------------------------------------------------
 
+// The balance is derived: current_balance === wallet_total + unassigned, and
+// wallet_total matches DEFAULT_WALLETS below (1000 + 4000).
 const DEFAULT_BALANCE = {
   current_balance: 5000.0,
-  manual_balance: 5000.0,
+  wallet_total: 5000.0,
+  unassigned: 0.0,
   last_updated: "2026-07-01",
 };
 
@@ -108,11 +111,9 @@ export type MockOverrides = Record<string, MockOverride>;
  * confirmation-bubble assertions.
  */
 function defaultFor(method: string, path: string): MockOverride | null {
+  // GET only — the balance is read-only (derived from wallets); there is no
+  // PUT /balance to mock.
   if (method === "GET" && path.startsWith("/balance")) return { json: DEFAULT_BALANCE };
-  if (method === "PUT" && path.startsWith("/balance")) {
-    // Echo the requested amount back as the new balance (handled specially below).
-    return { json: DEFAULT_BALANCE };
-  }
   if (method === "POST" && path.startsWith("/transactions/parse-pdf"))
     return { json: DEFAULT_TRANSACTIONS };
   if (method === "POST" && path.startsWith("/transactions/parse"))
@@ -178,20 +179,7 @@ export async function mockBackend(page: Page, overrides: MockOverrides = {}): Pr
       return;
     }
 
-    let json = override.json;
-
-    // Special case: PUT /balance echoes the submitted amount as the new balance
-    // so the "update balance" flow shows the value the user just typed.
-    if (method === "PUT" && path.startsWith("/balance") && override.status === undefined) {
-      try {
-        const body = request.postDataJSON() as { amount?: number };
-        if (typeof body?.amount === "number") {
-          json = { ...DEFAULT_BALANCE, current_balance: body.amount, manual_balance: body.amount };
-        }
-      } catch {
-        /* no/invalid body — fall back to the default balance */
-      }
-    }
+    const json = override.json;
 
     await route.fulfill({
       status: override.status ?? 200,

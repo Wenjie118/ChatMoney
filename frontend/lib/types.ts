@@ -27,10 +27,15 @@ export interface ITransaction {
   wallet_id?: number | null;
 }
 
-/** Mirrors backend BalanceResponse / db.get_balance(). */
+/** Mirrors backend BalanceResponse / db.get_balance().
+ *  The balance is derived: current_balance === wallet_total + unassigned. */
 export interface IBalance {
   current_balance: number;
-  manual_balance: number;
+  /** Σ of active wallet balances. */
+  wallet_total: number;
+  /** Real money not assigned to a wallet yet. */
+  unassigned: number;
+  /** Date of the most recent movement (null when there are none). */
   last_updated: string | null;
 }
 

@@ -1,10 +1,10 @@
 /**
  * BalanceCard — displays the current balance (read-only).
  *
- * The balance is now managed through wallets: your balance equals the sum of your
- * wallet balances, and you adjust it by editing a wallet in the Wallets tab (which
- * records an adjustment). So this card only READS `GET /balance` — there is no
- * "update balance" control here anymore.
+ * The balance is DERIVED from wallets: current_balance === wallet_total +
+ * unassigned. Edit a wallet in the Wallets tab and this number moves by exactly
+ * that much — there is nothing else stacked underneath it. So this card only READS
+ * `GET /balance`; there is no "update balance" control (and no PUT /balance).
  */
 "use client";
 
@@ -46,12 +46,23 @@ export default function BalanceCard() {
         RM {balance!.current_balance.toFixed(2)}
       </p>
       {balance!.last_updated && (
-        <p className="mt-1 text-xs text-white/70">Last updated: {balance!.last_updated}</p>
+        <p className="mt-1 text-xs text-white/70">Last movement: {balance!.last_updated}</p>
       )}
-      <p className="mt-3 text-xs text-white/70">
-        Manage your balance in the <span className="font-medium">Wallets</span> tab — it&apos;s the
-        sum of your wallets.
-      </p>
+
+      {/* Show the derivation only when there's unassigned money to explain the gap;
+          otherwise the balance IS the wallet total and a breakdown adds noise. */}
+      {Math.abs(balance!.unassigned) > 0.005 ? (
+        <p className="mt-3 text-xs text-white/70">
+          Wallets RM {balance!.wallet_total.toFixed(2)} + unassigned RM{" "}
+          {balance!.unassigned.toFixed(2)} — assign it in the{" "}
+          <span className="font-medium">Wallets</span> tab.
+        </p>
+      ) : (
+        <p className="mt-3 text-xs text-white/70">
+          The total of your wallets. Change it by editing a wallet in the{" "}
+          <span className="font-medium">Wallets</span> tab.
+        </p>
+      )}
     </div>
   );
 }
